@@ -1,0 +1,3 @@
+PROJECT SUMMARY:
+	Snype sky is a redo of snype boiz. It is a arena shooter map where you control 1 ghost unit and earn killstreaks similar to call of duty.
+	At the start of the map players will choose an arena and gametype/whatever team configuration/whatever settings.

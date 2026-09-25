@@ -1,0 +1,140 @@
+import common as Cmn;
+
+
+// Settings
+const DEBUG_ENABLED = 0;
+
+
+// Locations
+const L_ANYWHERE = $L("Anywhere");
+const L_MAIN = $L("main"); // This is the utility location that bounces around the map where ever it is needed.
+const L_BUFFER = $L("createbuffer"); // This is a pre-creation location for creating units and avoiding unplaceable errors if the units cannot be moved to the location after the buffer.
+const L_PATHABLE = $L("pathable"); // This is used to move a unit to a position, then check if the unit was offset from the exact position to determine if there is another unit there. The special "pathable" unit is stored at L_PATHABLE.
+const L_STAGING = $L("staging"); // This is the location where the main menu is/the staging area for the players.
+const L_HEIGHT0 = $L("height0"); // These are used to determine what location height a position is.
+const L_HEIGHT1 = $L("height1");
+const L_HEIGHT2 = $L("height2");
+const L_0X0 = $L("0x0"); // Pixel, can be used also as a secondary version of L_MAIN, if both are needed.
+const L_1X1 = $L("1x1"); // 1 tile, 32x32 pixels.
+const L_MOUSE = [$L("mouseloc1"), $L("mouseloc2"), $L("mouseloc3"), $L("mouseloc4"), $L("mouseloc5"), $L("mouseloc6"), $L("mouseloc7"), $L("mouseloc8")];
+const L_STORAGE = [$L("storage1"), $L("storage2"), $L("storage3"), $L("storage4"), $L("storage5"), $L("storage6"), $L("storage7"), $L("storage8")];
+
+
+// Units
+const U_ANY = 229;
+const U_MEN = 230;
+const U_HERO = [1, 1, 1, 1, 1, 1, 1, 1]; // hero unit type per player (1 = Terran Ghost)
+
+
+// Game
+const MAX_PLAYERS = 8;
+const FRAMES_PER_SECOND = 24;
+
+
+// Globals
+const screen = StringBuffer();
+var elapsed_time = 0; // frames
+var players_in_game = 0;
+
+
+// Player state
+const p_in_game = PVariable();
+const p_cunit = PVariable(); // hero CUnit, 0 if the player has no hero
+
+
+// Input (set by the MSQC plugin, names must match the MSQC config in EUD Editor)
+const mouse_left_down = PVariable();    // MouseDown(LEFT): 1
+const mouse_right_down = PVariable();   // MouseDown(RIGHT): 1
+const keypress_c = PVariable();         // KeyDown(C): 1
+const keypress_d = PVariable();         // KeyDown(D): 1
+const keypress_z = PVariable();         // KeyUp(Z): 1
+const keypress_x = PVariable();         // KeyUp(X): 1
+const keypress_e = PVariable();         // KeyDown(E): 1
+const keypress_g = PVariable();         // KeyDown(G): 1, KeyUp(G): 2
+const keypress_menu = PVariable();      // KeyUp(L): 1
+EUDRegisterObjectToNamespace("mouseleftdown", mouse_left_down);
+EUDRegisterObjectToNamespace("mouserightdown", mouse_right_down);
+EUDRegisterObjectToNamespace("key_c", keypress_c);
+EUDRegisterObjectToNamespace("key_d", keypress_d);
+EUDRegisterObjectToNamespace("key_z", keypress_z);
+EUDRegisterObjectToNamespace("key_x", keypress_x);
+EUDRegisterObjectToNamespace("key_e", keypress_e);
+EUDRegisterObjectToNamespace("key_g", keypress_g);
+EUDRegisterObjectToNamespace("key_menu", keypress_menu);
+
+
+function GetMousePosition(playerID) {
+    // MSQC moves each player's MouseLoc to their mouse
+    const x, y = Cmn.GetLocationPoint(L_MOUSE[playerID]);
+    return x, y;
+}
+
+
+// Hero
+
+function HeroIsAlive(playerID) {
+    if (p_cunit[playerID] == 0) return 0;
+    const unit = CUnit(p_cunit[playerID]);
+    if (unit.unitType == U_HERO[playerID] && unit.playerID == playerID && unit.hp > 0) return 1;
+    return 0;
+}
+
+
+function RemoveHero(playerID) {
+    if (HeroIsAlive(playerID)) {
+        const unit = CUnit(p_cunit[playerID]);
+        unit.remove();
+    }
+    p_cunit[playerID] = 0;
+}
+
+
+function SpawnHero(playerID, location) {
+    // replaces any existing hero. @return 1 on success, 0 if the hero could not be placed
+    RemoveHero(playerID);
+    const unit = Cmn.CreateCUnit(U_HERO[playerID], playerID, location);
+    p_cunit[playerID] = unit;
+    if (unit == 0) return 0;
+    return 1;
+}
+
+
+function onPluginStart() {
+    randomize();
+
+    // Initialize Players
+    EUDPlayerLoop()();
+        const p = getcurpl();
+        if (p < MAX_PLAYERS && playerexist(p)) {
+            players_in_game++;
+            p_in_game[p] = 1;
+            for (var i = 0; i < MAX_PLAYERS; i++) {
+                SetAllianceStatus(i, Ally); // current player allies player i
+            }
+            SpawnHero(p, L_1X1); // TODO: temporary test spawn
+            CenterView(L_1X1);
+        }
+    EUDEndPlayerLoop();
+}
+
+
+function afterTriggerExec() {
+    // check for players that left
+    for (var p = 0; p < MAX_PLAYERS; p++) {
+        if (!playerexist(p) && p_in_game[p]) {
+            RemoveHero(p);
+            p_in_game[p] = 0;
+            players_in_game--;
+        }
+    }
+
+    EUDPlayerLoop()();
+        const playerID = getcurpl();
+        if (playerID < MAX_PLAYERS && p_in_game[playerID]) {
+            // forget the hero once it dies, so p_cunit never points at a reused unit slot
+            if (p_cunit[playerID] != 0 && !HeroIsAlive(playerID)) p_cunit[playerID] = 0;
+        }
+    EUDEndPlayerLoop();
+
+    elapsed_time++;
+}

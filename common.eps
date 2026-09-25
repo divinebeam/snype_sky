@@ -1,0 +1,271 @@
+// Shared math, geometry and utility helpers. No game state lives here.
+
+// scratch locations used by the helpers below (full location list is in main.eps)
+const L_MAIN = $L("main");
+const L_BUFFER = $L("createbuffer");
+
+
+// @return random integer in [min, max] (negative bounds wrap correctly)
+function Random(min, max) {
+    return min + dwrand() / (4294967295 / (max - min + 1) + 1);
+}
+
+
+function IsNegative(value) {
+    if (value >= 0x80000000) return 1;
+    return 0;
+}
+
+
+function Abs(value) {
+    if (value >= 0x80000000) return -value;
+    return value;
+}
+
+
+// Math
+
+function GetDistance(fromX, fromY, toX, toY) {
+    const a = fromX - toX;
+    const b = fromY - toY;
+    return sqrt(a*a + b*b);
+}
+
+
+function GetWholeAndFraction(value) {
+    // takes in a value * 10000 and returns the whole number and the fraction separately.
+    const whole, fraction = div(value, 10000);
+    return whole, fraction;
+}
+
+
+function GetPercentage(currentValue, maxValue) {
+    const new_current = currentValue * 10000;
+    const percentage = (new_current / maxValue) * 100;
+    return percentage / 10000;
+}
+
+
+// Angles (degrees, 0 - 359)
+
+function GetAngle(originx, originy, destinationx, destinationy) {
+    return atan2(destinationy - originy, destinationx - originx);
+}
+
+
+function AddAngles(angle0, angle1) {
+    var new_angle = angle0 + angle1;
+    if (new_angle >= 0x80000000) new_angle += 360;
+    else if (new_angle >= 360) new_angle -= 360;
+    return new_angle;
+}
+
+
+function SCDirectionToDeg(direction) {
+    // SC unit direction (0 - 255, 0 = up) to degrees (0 = right)
+    const angle = (direction * 14063) / 10000;
+    return AddAngles(angle, -90);
+}
+
+
+// Positions (pixels, 32 px per tile)
+
+function MovePosTowards(positionx, positiony, angle, distance) {
+    const directionx, directiony = lengthdir(distance, angle);
+    return positionx + directionx, positiony + directiony;
+}
+
+
+function RotatePosAroundPoint(positionx, positiony, pointx, pointy, rotation) {
+    const distance = GetDistance(positionx, positiony, pointx, pointy);
+    const new_positionx, new_positiony = MovePosTowards(pointx, pointy, rotation, distance);
+    return new_positionx, new_positiony;
+}
+
+
+function PosIsWithinRect(positionx, positiony, left, right, top, bottom) {
+    if (positionx >= left && positionx <= right && positiony >= top && positiony <= bottom) return 1;
+    return 0;
+}
+
+
+// @return map width and height in pixels
+function GetMapSize() {
+    const tile_size = dwread(0x57F1D4); // low word = width, high word = height (tiles)
+    const width = (tile_size & 0xFFFF) * 32;
+    const height = (tile_size >> 16) * 32;
+    return width, height;
+}
+
+
+function PosIsOnMap(positionx, positiony) {
+    // unsigned compare: negative positions wrap to huge values and fail
+    const width, height = GetMapSize();
+    if (positionx < width && positiony < height) return 1;
+    return 0;
+}
+
+
+function PosToSquare(positionx, positiony, width) {
+    const half_width = width / 2;
+    var limit_left = 0;
+    if (positionx > half_width) limit_left = positionx - half_width;
+    const limit_right = positionx + half_width;
+    var limit_top = 0;
+    if (positiony > half_width) limit_top = positiony - half_width;
+    const limit_bottom = positiony + half_width;
+    return limit_left, limit_right, limit_top, limit_bottom;
+}
+
+
+// Locations
+
+function GetLocationPoint(location) {
+    // @return the top-left corner of the location
+    const locTable = EPD(0x58DC4C);
+    return dwread_epd(locTable + location * 5), dwread_epd(locTable + location * 5 + 1);
+}
+
+
+function GetLocationSize(location) {
+    // @return width, height of the location in pixels
+    const epd = EPD(0x58DC4C) + location * 5;
+    const width = dwread_epd(epd + 2) - dwread_epd(epd);
+    const height = dwread_epd(epd + 3) - dwread_epd(epd + 1);
+    return width, height;
+}
+
+
+function CenterLoc(location, x, y) {
+    // moves the location so it is centered on (x, y), keeping its size
+    const width, height = GetLocationSize(location);
+    setloc(location, x, y);
+    dilateloc(location, width / 2, height / 2);
+}
+
+
+// Bit flags
+
+function SetFlag(flags, id) {
+    return flags | (1 << id);
+}
+
+
+function ClearFlag(flags, id) {
+    return flags & ~(1 << id);
+}
+
+
+function FlagIsSet(flags, id) {
+    if (flags & (1 << id)) return 1;
+    return 0;
+}
+
+
+// Units
+
+function GetUnitTotal() {
+    return dwread(0x6283F0);
+}
+
+
+function GetCountOfUnit(playerID, unitType) {
+    return dwread_epd(EPD(0x582324) + 12 * unitType + playerID);
+}
+
+
+function CreateCUnit(unitType, playerID, location) : CUnit {
+    // creates a unit at L_BUFFER, then moves it to location
+    // @return the new unit, or 0 if it could not be placed at location
+    const newUnit = CUnit.from_read(EPD(0x628438)); // next free unit slot
+    CreateUnit(1, unitType, L_BUFFER, playerID);
+    MoveUnit(1, unitType, playerID, L_BUFFER, location);
+    if (Bring(playerID, AtLeast, 1, unitType, L_BUFFER)) {
+        RemoveUnitAt(All, unitType, L_BUFFER, playerID);
+        return 0;
+    }
+    return newUnit;
+}
+
+
+// Visuals
+
+function CreateImageSpriteAtLocation(playerID, location, imageID, drawFunc, iscript) {
+    var new_iscript = iscript;
+    if (new_iscript == 0) new_iscript = 281;
+    const prev_iscript = dwread(0x666778 + 34000 + imageID * 4);
+    dwwrite(0x666778 + 34000 + imageID * 4, new_iscript); // change image iscript
+    dwwrite(0x666778 + 14000 + imageID * 1, drawFunc); // change image drawfunc
+    SetMemoryX(0x00666458, SetTo, imageID, 0x0000ffff); // change scanner image to input image
+    CreateUnit(1, 33, location, playerID);
+    RemoveUnit(33, playerID);
+    SetMemoryX(0x00666458, SetTo, 546, 0x0000ffff); // revert scanner image
+    dwwrite(0x666778 + 34000 + imageID * 4, prev_iscript); // revert image iscript
+}
+
+
+function CreateUnitDeathAtLocation(unitType, playerID, location) {
+    CreateUnit(1, unitType, L_BUFFER, playerID);
+    MoveUnit(1, unitType, playerID, L_BUFFER, location);
+    if (Bring(playerID, AtLeast, 1, unitType, L_BUFFER)) RemoveUnitAt(All, unitType, L_BUFFER, playerID);
+    KillUnit(unitType, playerID);
+}
+
+
+function DrawCircle(positionx, positiony, diameter, dots, imageID, drawFunc, iscript) {
+    const angle_increment = 360 / dots;
+    var angle = 0;
+    for (var i = 0; i < dots; i++) {
+        const x, y = MovePosTowards(positionx, positiony, angle, diameter / 2);
+        setloc(L_MAIN, x, y);
+        CreateImageSpriteAtLocation($P8, L_MAIN, imageID, drawFunc, iscript);
+        angle += angle_increment;
+    }
+}
+
+
+function DrawLine(originx, originy, destinationx, destinationy, dots, imageID, drawFunc, iscript) {
+    const d = GetDistance(originx, originy, destinationx, destinationy);
+    const a = GetAngle(originx, originy, destinationx, destinationy);
+    const increment = d / dots;
+    for (var i = 0; i < dots; i++) {
+        const x, y = MovePosTowards(originx, originy, a, increment * i);
+        setloc(L_MAIN, x, y);
+        CreateImageSpriteAtLocation($P8, L_MAIN, imageID, drawFunc, iscript);
+    }
+}
+
+
+// Vision (AI script names must be compile-time constants, hence the chains)
+
+function GetVision(playerID) {
+    if (playerID == 0) RunAIScript("+Vi0");
+    else if (playerID == 1) RunAIScript("+Vi1");
+    else if (playerID == 2) RunAIScript("+Vi2");
+    else if (playerID == 3) RunAIScript("+Vi3");
+    else if (playerID == 4) RunAIScript("+Vi4");
+    else if (playerID == 5) RunAIScript("+Vi5");
+    else if (playerID == 6) RunAIScript("+Vi6");
+    else if (playerID == 7) RunAIScript("+Vi7");
+}
+
+
+function LoseVision(playerID) {
+    if (playerID == 0) RunAIScript("-Vi0");
+    else if (playerID == 1) RunAIScript("-Vi1");
+    else if (playerID == 2) RunAIScript("-Vi2");
+    else if (playerID == 3) RunAIScript("-Vi3");
+    else if (playerID == 4) RunAIScript("-Vi4");
+    else if (playerID == 5) RunAIScript("-Vi5");
+    else if (playerID == 6) RunAIScript("-Vi6");
+    else if (playerID == 7) RunAIScript("-Vi7");
+}
+
+
+// Text
+
+function ClearTextLines(from_line, to_line) {
+    for (var i = from_line; i < to_line + 1; i++) {
+        DisplayTextAt(i, "\x0BNull");
+    }
+}
