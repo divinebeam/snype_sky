@@ -26,9 +26,20 @@ const U_MEN = 230;
 const U_HERO = [1, 1, 1, 1, 1, 1, 1, 1]; // hero unit type per player (1 = Terran Ghost)
 
 
+// Orders
+const ORDER_CLOAK = 109;
+const ORDER_DECLOAK = 110;
+
+
 // Game
 const MAX_PLAYERS = 8;
 const FRAMES_PER_SECOND = 24;
+const MOVE_RESET_FRAMES = 4; // frames standing still before move time resets
+const SPEED_BASE = 1400; // hero top speed
+const SPEED_SPRINT = 2000; // hero top speed while sprinting
+const SPRINT_MOVE_FRAMES = 40; // move time needed before sprinting starts
+const DODGE_RECHARGE = 120; // frames until dodge can be used again
+const DODGE_CLOAK_FRAMES = 12; // frames the hero stays cloaked (dodging) after pressing dodge
 
 
 // Globals
@@ -40,6 +51,12 @@ var players_in_game = 0;
 // Player state
 const p_in_game = PVariable();
 const p_cunit = PVariable(); // hero CUnit, 0 if the player has no hero
+const p_pos_x = PVariable(); // hero position as of the last frame
+const p_pos_y = PVariable();
+const p_move_time = PVariable(); // frames spent moving, reset after MOVE_RESET_FRAMES frames standing still
+const p_still_time = PVariable(); // frames since the hero stopped moving
+const p_top_speed = PVariable(); // hero top speed, set with set_p_top_speed
+const p_dodge_timer = PVariable(); // counts down from DODGE_RECHARGE after dodging, 0 = dodge ready
 
 
 // Input (set by the MSQC plugin, names must match the MSQC config in EUD Editor)
@@ -89,13 +106,37 @@ function RemoveHero(playerID) {
 }
 
 
+function set_p_top_speed(playerID, newValue) {
+    p_top_speed[playerID] = newValue;
+    if (HeroIsAlive(playerID)) {
+        const unit = CUnit(p_cunit[playerID]);
+        unit.topSpeed = newValue;
+    }
+}
+
+
 function SpawnHero(playerID, location) {
     // replaces any existing hero. @return 1 on success, 0 if the hero could not be placed
     RemoveHero(playerID);
     const unit = Cmn.CreateCUnit(U_HERO[playerID], playerID, location);
     p_cunit[playerID] = unit;
     if (unit == 0) return 0;
+    const hero = CUnit(p_cunit[playerID]);
+    p_pos_x[playerID] = hero.posX; // so the first frame doesn't count as movement
+    p_pos_y[playerID] = hero.posY;
+    p_move_time[playerID] = 0;
+    p_still_time[playerID] = MOVE_RESET_FRAMES;
+    set_p_top_speed(playerID, SPEED_BASE);
+    p_dodge_timer[playerID] = 0;
+    ModifyUnitEnergy(1, U_HERO[playerID], playerID, L_ANYWHERE, 100); // dodge ready
     return 1;
+}
+
+
+function HeroIsDodging(playerID) {
+    // true during the first DODGE_CLOAK_FRAMES frames after dodging
+    if (p_dodge_timer[playerID] > DODGE_RECHARGE - DODGE_CLOAK_FRAMES) return 1;
+    return 0;
 }
 
 
@@ -131,8 +172,64 @@ function afterTriggerExec() {
     EUDPlayerLoop()();
         const playerID = getcurpl();
         if (playerID < MAX_PLAYERS && p_in_game[playerID]) {
-            // forget the hero once it dies, so p_cunit never points at a reused unit slot
-            if (p_cunit[playerID] != 0 && !HeroIsAlive(playerID)) p_cunit[playerID] = 0;
+            if (HeroIsAlive(playerID)) {
+                const hero = CUnit(p_cunit[playerID]);
+                const hero_x, hero_y = hero.posX, hero.posY;
+
+                // movement: compare against last frame's position
+                var is_moving = 0;
+                if (hero_x != p_pos_x[playerID] || hero_y != p_pos_y[playerID]) is_moving = 1;
+                p_pos_x[playerID] = hero_x;
+                p_pos_y[playerID] = hero_y;
+
+                // flingy movement quirk: a unit can get stuck in place with speed left over, clear it
+                if (!is_moving && hero.currentSpeed1 > 0) {
+                    hero.currentSpeed1 = 0;
+                    hero.currentSpeed2 = 0;
+                }
+
+                // responsiveness: process new orders immediately instead of waiting for the order timers
+                hero.orderTimer = 0;
+                hero.orderQueueTimer = 0;
+
+                if (is_moving) {
+                    p_move_time[playerID] += 1;
+                    p_still_time[playerID] = 0;
+                } else if (p_still_time[playerID] < MOVE_RESET_FRAMES) {
+                    p_still_time[playerID] += 1;
+                    if (p_still_time[playerID] == MOVE_RESET_FRAMES) p_move_time[playerID] = 0;
+                }
+
+                // sprint: faster after moving for a while, back to base speed as soon as the hero stops
+                var target_speed = SPEED_BASE;
+                if (is_moving && p_move_time[playerID] >= SPRINT_MOVE_FRAMES) target_speed = SPEED_SPRINT;
+                if (p_top_speed[playerID] != target_speed) set_p_top_speed(playerID, target_speed);
+
+                // dodge: C cloaks the hero for DODGE_CLOAK_FRAMES frames, then recharges
+                if (p_dodge_timer[playerID] > 0) {
+                    p_dodge_timer[playerID] -= 1;
+                    if (p_dodge_timer[playerID] == 0) {
+                        DisplayText("\x12\x04DODGE READY!");
+                        PlayWAV("staredit/wav/dodge_ready.ogg");
+                        ModifyUnitEnergy(1, U_HERO[playerID], playerID, L_ANYWHERE, 100);
+                    }
+                }
+                if (keypress_c[playerID] && p_dodge_timer[playerID] == 0) {
+                    p_dodge_timer[playerID] = DODGE_RECHARGE;
+                    DisplayText("\x12\x07DODGED!");
+                    PlayWAV("staredit/wav/dodge.ogg");
+                }
+                if (HeroIsDodging(playerID)) Cmn.SetUnitSecondaryOrder(p_cunit[playerID], ORDER_CLOAK);
+                else if (Cmn.GetUnitIsCloaked(p_cunit[playerID])) Cmn.SetUnitSecondaryOrder(p_cunit[playerID], ORDER_DECLOAK);
+                // energy shows dodge readiness: empty while recharging (held at 0 against natural regen).
+                // not emptied during the cloak frames, since cloak drains energy and decloaks at 0.
+                if (p_dodge_timer[playerID] > 0 && !HeroIsDodging(playerID)) hero.energy = 0;
+
+                eprintf("move time: {}", p_move_time[playerID]);
+            } else {
+                // forget the hero once it dies, so p_cunit never points at a reused unit slot
+                p_cunit[playerID] = 0;
+            }
         }
     EUDEndPlayerLoop();
 
