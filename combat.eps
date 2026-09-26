@@ -2,6 +2,7 @@
 import defs as Def;
 import common as Cmn;
 import game as Game;
+import score as Scoring;
 import hero as Hero;
 
 
@@ -31,6 +32,7 @@ const p_interrupt_timer = PVariable(); // counts down after a hit, interrupts th
 const p_frames_since_shot = PVariable(); // 0 on the frame the hero fires, then counts up every frame
 const p_regen_timer = PVariable(); // frames since the hero last took damage, stops at REGEN_DELAY (= regenerating)
 const p_last_attacker = PVariable(); // player who last damaged this hero, NO_PLAYER if none since spawn
+const p_shot_target = PVariable(); // hero hit by this player's latest shot, NO_PLAYER if it didn't hit one (lobby uses it)
 const p_killer = PVariable(); // player who brought this hero to 0 hp, NO_PLAYER if none
 const p_kills = PVariable();
 const p_deaths = PVariable();
@@ -173,6 +175,7 @@ function KillHero(victimID) {
     const killerID = p_killer[victimID];
     if (killerID != Def.NO_PLAYER) {
         p_kills[killerID] += 1;
+        Scoring.AddScore(killerID, Scoring.SCORE_KILL);
         Game.FormatPlayerName(killer_name, killerID);
         Game.FormatPlayerName(victim_name, victimID);
         f_printAll("{:s} \x04killed {:s}", killer_name, victim_name);
@@ -181,7 +184,11 @@ function KillHero(victimID) {
         setcurpl(old_cp);
     }
     for (var a = 0; a < Def.MAX_PLAYERS; a++) {
-        if (a != killerID && a != victimID && damage_taken[victimID * Def.MAX_PLAYERS + a] > 0) p_assists[a] += 1;
+        const assist_damage = damage_taken[victimID * Def.MAX_PLAYERS + a];
+        if (a != killerID && a != victimID && assist_damage > 0) {
+            p_assists[a] += 1;
+            Scoring.AddScore(a, assist_damage); // assist score = damage dealt to the victim
+        }
     }
     ClearDamageTaken(victimID);
 }
@@ -254,13 +261,18 @@ function UpdateAttack(playerID) {
         frames_since_shot = 0;
         PlayRifleSound(playerID);
         const target = hero.orderTargetUnit;
-        const victimID = GetHeroOwner(target);
-        if (victimID != Def.NO_PLAYER && !Hero.IsDodging(victimID)) {
-            const distance = Cmn.GetDistance(hero.posX, hero.posY, target.posX, target.posY);
-            const damage = GetShotDamage(playerID, distance);
-            DamageHero(playerID, victimID, damage);
-            screen.printf("\x12\x11HIT {}", damage);
-            Def.PlaySoundHitmarker();
+        var victimID = GetHeroOwner(target);
+        if (victimID != Def.NO_PLAYER && Hero.IsDodging(victimID)) victimID = Def.NO_PLAYER; // dodged: the shot does nothing
+        p_shot_target[playerID] = victimID;
+        if (victimID != Def.NO_PLAYER) {
+            // in the lobby shots never do damage (the lobby reads p_shot_target instead)
+            if (Game.game_phase == Game.PHASE_PLAYING) {
+                const distance = Cmn.GetDistance(hero.posX, hero.posY, target.posX, target.posY);
+                const damage = GetShotDamage(playerID, distance);
+                DamageHero(playerID, victimID, damage);
+                screen.printf("\x12\x11HIT {}", damage);
+                Def.PlaySoundHitmarker();
+            }
             interrupt_timer = INTERRUPT_ATTACK_DELAY;
         }
     }

@@ -1,13 +1,29 @@
-// Game state shared by every system: game mode, current zone, and who is playing (humans and bots).
+// Game state shared by every system: game phase, settings (mode, zone, score to win), and who is playing (humans and bots).
 import defs as Def;
 
 
+// Phases
+const PHASE_LOBBY = 0; // pre-game: heroes in the staging area, host picks settings (lobby.eps)
+const PHASE_PLAYING = 1;
+
 // Game modes
 const GAME_MODE_FFA = 0;
+const GAME_MODE_TDM = 1; // placeholder
+const GAME_MODE_CTF = 2; // placeholder
+const GAME_MODE_COUNT = 3;
+const GAME_MODE_NAMES = [Db("Free For All"), Db("Team Deathmatch"), Db("Capture The Flag")];
+
+// Score to win
+const SCORE_TO_WIN_STEP = 500; // free for all / team deathmatch
+const SCORE_TO_WIN_MAX = 10000;
+const CAPTURES_TO_WIN_MAX = 10; // capture the flag
 
 
+var game_phase = PHASE_LOBBY;
 var game_mode = GAME_MODE_FFA;
 var current_zone = Def.ZONE_BADLANDS;
+var score_to_win = 2500; // free for all / team deathmatch
+var captures_to_win = 3; // capture the flag
 var players_in_game = 0;
 
 const p_in_game = PVariable(); // 1 = human or bot taking part
@@ -23,7 +39,88 @@ function AddPlayer(playerID, isBot) {
 
 function RemovePlayer(playerID) {
     p_in_game[playerID] = 0;
+    p_is_bot[playerID] = 0;
     players_in_game--;
+}
+
+
+function IsHuman(playerID) {
+    if (p_in_game[playerID] && !p_is_bot[playerID]) return 1;
+    return 0;
+}
+
+
+function SetBot(playerID, enabled) {
+    // turns an empty slot's bot on or off (never touches human slots)
+    if (IsHuman(playerID)) return;
+    if (enabled && !p_in_game[playerID]) AddPlayer(playerID, 1);
+    else if (!enabled && p_in_game[playerID]) RemovePlayer(playerID);
+}
+
+
+function GetHost() {
+    // the human in the lowest slot, or NO_PLAYER
+    for (var p = 0; p < Def.MAX_PLAYERS; p++) {
+        if (IsHuman(p)) return p;
+    }
+    return Def.NO_PLAYER;
+}
+
+
+// Settings (changed by the host in the lobby)
+
+function SetPhase(phase) { game_phase = phase; }
+
+
+// Cycle functions: forward = 1 goes to the next option, 0 to the previous one. all of them wrap around.
+
+function CycleZone(forward) {
+    if (forward) {
+        current_zone += 1;
+        if (current_zone >= Def.ZONE_COUNT) current_zone = 0;
+    } else {
+        if (current_zone == 0) current_zone = Def.ZONE_COUNT - 1;
+        else current_zone -= 1;
+    }
+}
+
+
+function CycleGameMode(forward) {
+    if (forward) {
+        game_mode += 1;
+        if (game_mode >= GAME_MODE_COUNT) game_mode = 0;
+    } else {
+        if (game_mode == 0) game_mode = GAME_MODE_COUNT - 1;
+        else game_mode -= 1;
+    }
+}
+
+
+function CycleScoreToWin(forward) {
+    // cycles the setting that applies to the current mode
+    if (game_mode == GAME_MODE_CTF) {
+        if (forward) {
+            captures_to_win += 1;
+            if (captures_to_win > CAPTURES_TO_WIN_MAX) captures_to_win = 1;
+        } else {
+            if (captures_to_win <= 1) captures_to_win = CAPTURES_TO_WIN_MAX;
+            else captures_to_win -= 1;
+        }
+    } else {
+        if (forward) {
+            score_to_win += SCORE_TO_WIN_STEP;
+            if (score_to_win > SCORE_TO_WIN_MAX) score_to_win = SCORE_TO_WIN_STEP;
+        } else {
+            if (score_to_win <= SCORE_TO_WIN_STEP) score_to_win = SCORE_TO_WIN_MAX;
+            else score_to_win -= SCORE_TO_WIN_STEP;
+        }
+    }
+}
+
+
+function IsModeAvailable(mode) {
+    if (mode == GAME_MODE_FFA) return 1;
+    return 0; // team deathmatch and capture the flag aren't implemented yet
 }
 
 

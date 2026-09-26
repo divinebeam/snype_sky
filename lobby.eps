@@ -1,0 +1,163 @@
+// Pre-game lobby: every slot's hero stands in the staging area, the host (lowest human slot) clicks the on-screen menu to
+// pick zone / mode / score to win and start the game, and shoots empty slots' heroes to turn their bots on or off.
+// Heroes can move, dash, dodge and shoot here, but shots do no damage.
+import defs as Def;
+import common as Cmn;
+import game as Game;
+import controls as Controls;
+import score as Scoring;
+import hero as Hero;
+import combat as Combat;
+import bots as Bot;
+
+
+// Staging area: slot N's hero starts at (STAGING_X + N * STAGING_SPACING, STAGING_Y)
+const STAGING_X = 368;
+const STAGING_Y = 112;
+const STAGING_SPACING = 32;
+
+// Menu text lines (0 = top). The menu uses lines 0-8 and leaves 9-10 free for chat and temporary messages.
+const LINE_ZONE = 0;
+const LINE_MODE = 1;
+const LINE_SCORE = 2;
+const LINE_START = 3;
+const LINE_HINT = 7;
+const LINE_ROSTER = 8; // every slot on one centered line: "name | Bot 2 | Inactive | ..."
+
+// Where the text lines are on screen, for turning a click's screen y into a line (the visible height is the same at any
+// resolution). taken from the old SNYPE menu: line 0 spans y 110-125, 16 px per line.
+// Left/right is decided in map coordinates instead: every human's camera is locked on the staging location during the
+// lobby, so the middle of the screen is always the center x of that location, whatever the screen width.
+// with DEBUG_ENABLED the host sees each click's position.
+const MENU_LINE_TOP = 110;
+const MENU_LINE_HEIGHT = 16;
+
+
+const screen = StringBuffer();
+const slot_texts = [Db(64), Db(64), Db(64), Db(64), Db(64), Db(64), Db(64), Db(64)]; // roster entry per slot
+
+
+function CreateStagingHero(playerID) {
+    // every slot gets a hero in the staging area, even empty ones (the host shoots them to toggle their bot)
+    setloc(Def.L_MAIN, STAGING_X + playerID * STAGING_SPACING, STAGING_Y);
+    if (Hero.Create(playerID, Def.L_MAIN)) Combat.Reset(playerID);
+}
+
+
+function StartGame() {
+    // inactive slots lose their hero; everyone else is parked and respawns into the zone on the next frame
+    for (var p = 0; p < Def.MAX_PLAYERS; p++) {
+        if (!Game.p_in_game[p]) {
+            Hero.Remove(p);
+        } else {
+            Hero.Park(p);
+            Hero.p_respawn_timer[p] = 1;
+            if (Game.p_is_bot[p]) Bot.Init(p);
+        }
+    }
+    Scoring.ResetCurrentScores();
+    Game.SetPhase(Game.PHASE_PLAYING);
+
+    const old_cp = getcurpl();
+    for (var h = 0; h < Def.MAX_PLAYERS; h++) {
+        if (Game.IsHuman(h)) {
+            setcurpl(h);
+            Cmn.ClearTextLines(0, LINE_ROSTER); // only the menu lines, not chat
+        }
+    }
+    setcurpl(old_cp);
+    f_printAll("\x04Game started: \x1F{:s} \x04- \x1F{:s}", Game.GAME_MODE_NAMES[Game.game_mode], Def.ZONE_NAMES[Game.current_zone]);
+}
+
+
+function HandleHostShot(hostID) {
+    // host shot an empty slot's hero this frame: toggle that slot's bot
+    if (Combat.p_frames_since_shot[hostID] != 0) return;
+    const targetID = Combat.p_shot_target[hostID];
+    if (targetID == Def.NO_PLAYER || Game.IsHuman(targetID)) return;
+    var enable = 1;
+    if (Game.p_in_game[targetID]) enable = 0;
+    Game.SetBot(targetID, enable);
+}
+
+
+function HandleHostClick(hostID) {
+    const screen_y = Controls.menu_click_y[hostID];
+    if (screen_y == 0xFFFFFFFF) return; // no click this frame
+
+    // left of the staging center = previous option (◁), right = next option (▷)
+    const map_x, map_y = Controls.GetMousePosition(hostID);
+    const left, top, right, bottom = Cmn.GetLocationRect(Def.L_STAGING);
+    var forward = 1;
+    if (map_x < (left + right) / 2) forward = 0;
+
+    if (Def.DEBUG_ENABLED) {
+        const old_cp = getcurpl();
+        setcurpl(hostID);
+        eprintf("menu click: screen y {} | map x {} (center {})", screen_y, map_x, (left + right) / 2);
+        setcurpl(old_cp);
+    }
+
+    if (screen_y < MENU_LINE_TOP) return;
+    const line = (screen_y - MENU_LINE_TOP) / MENU_LINE_HEIGHT;
+    if (line == LINE_ZONE) Game.CycleZone(forward);
+    else if (line == LINE_MODE) Game.CycleGameMode(forward);
+    else if (line == LINE_SCORE) Game.CycleScoreToWin(forward);
+    else if (line == LINE_START && Game.IsModeAvailable(Game.game_mode)) StartGame();
+}
+
+
+function FormatSlot(dst, slot) {
+    // roster entry: colored player name, "Bot N", or "Inactive"
+    if (Game.p_in_game[slot]) Game.FormatPlayerName(dst, slot);
+    else sprintf(dst, "\x02Inactive"); // not \x05: it would recolor the rest of the roster line
+}
+
+
+function Render(playerID, hostID) {
+    // draws the menu for playerID, who must be the current player. redrawn every frame so chat can't push it around,
+    // and the camera is kept on the staging area so clicks can be split into left/right of center (see HandleHostClick)
+    CenterView(Def.L_STAGING);
+
+    screen.printfAt(LINE_ZONE, "\x13\x04Zone: \x1F◁ {:s} ▷", Def.ZONE_NAMES[Game.current_zone]);
+
+    if (Game.IsModeAvailable(Game.game_mode)) screen.printfAt(LINE_MODE, "\x13\x04Mode: \x1F◁ {:s} ▷", Game.GAME_MODE_NAMES[Game.game_mode]);
+    else screen.printfAt(LINE_MODE, "\x13\x04Mode: \x1F◁ {:s} ▷ \x06(coming soon)", Game.GAME_MODE_NAMES[Game.game_mode]);
+
+    if (Game.game_mode == Game.GAME_MODE_CTF) screen.printfAt(LINE_SCORE, "\x13\x04Captures to win: \x1F◁ {} ▷", Game.captures_to_win);
+    else screen.printfAt(LINE_SCORE, "\x13\x04Score to win: \x1F◁ {} ▷", Game.score_to_win);
+
+    if (playerID != hostID) screen.printfAt(LINE_START, "\x13\x05Waiting for the host to start...");
+    else if (Game.IsModeAvailable(Game.game_mode)) screen.printfAt(LINE_START, "\x13\x07[ START GAME ]");
+    else screen.printfAt(LINE_START, "\x13\x06[ START GAME ] \x05mode not available yet");
+
+    // unused menu lines are cleared every frame so chat messages don't show up inside the menu
+    Cmn.ClearTextLines(LINE_START + 1, LINE_HINT - 1);
+
+    if (playerID == hostID) screen.printfAt(LINE_HINT, "\x13\x05Click left or right of a setting to change it. Shoot an empty slot's ghost to turn its bot on/off.");
+    else screen.printfAt(LINE_HINT, "\x13\x05The host is choosing the settings.");
+
+    for (var slot = 0; slot < Def.MAX_PLAYERS; slot++) FormatSlot(slot_texts[slot], slot);
+    screen.printfAt(LINE_ROSTER, "\x13{:s}\x02 | {:s}\x02 | {:s}\x02 | {:s}\x02 | {:s}\x02 | {:s}\x02 | {:s}\x02 | {:s}",
+        slot_texts[0], slot_texts[1], slot_texts[2], slot_texts[3], slot_texts[4], slot_texts[5], slot_texts[6], slot_texts[7]);
+}
+
+
+function Update() {
+    // once per frame during the lobby, after every hero has been updated
+    const hostID = Game.GetHost();
+    if (hostID != Def.NO_PLAYER) {
+        HandleHostShot(hostID);
+        HandleHostClick(hostID);
+    }
+    if (Game.game_phase != Game.PHASE_LOBBY) return; // the host just started the game
+
+    const old_cp = getcurpl();
+    for (var p = 0; p < Def.MAX_PLAYERS; p++) {
+        if (Game.IsHuman(p)) {
+            setcurpl(p);
+            Render(p, hostID);
+        }
+    }
+    setcurpl(old_cp);
+}

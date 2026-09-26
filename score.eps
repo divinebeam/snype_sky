@@ -1,0 +1,63 @@
+// Score: total and per-round score, and the "+score" popup that counts up on screen when you earn points.
+import defs as Def;
+import common as Cmn;
+
+
+const SCORE_KILL = 100;
+const SCORE_POPUP_LINE = 0; // text line (0 = top, 10 = bottom): 5th line up from the bottom
+const SCORE_POPUP_TIME = 72; // frames the popup stays up after the last score gained
+const SCORE_COUNT_DIVISOR = 6; // each frame the shown number closes 1/SCORE_COUNT_DIVISOR of the gap (+1), so it counts up quickly then slows
+
+
+const screen = StringBuffer();
+
+const p_total_score = PVariable();
+const p_current_score = PVariable(); // reset between rounds with ResetCurrentScores
+const p_popup_score = PVariable(); // score gained while the current popup has been up
+const p_popup_shown = PVariable(); // number currently shown, counts up to p_popup_score
+const p_popup_timer = PVariable(); // frames until the popup disappears, 0 = hidden
+
+
+function AddScore(playerID, amount) {
+    if (amount == 0) return;
+    p_total_score[playerID] += amount;
+    p_current_score[playerID] += amount;
+
+    // start a new popup, or add to the one already showing
+    if (p_popup_timer[playerID] == 0) {
+        p_popup_score[playerID] = amount;
+        p_popup_shown[playerID] = 0;
+    } else {
+        p_popup_score[playerID] += amount;
+    }
+    p_popup_timer[playerID] = SCORE_POPUP_TIME;
+}
+
+
+function ResetCurrentScores() {
+    // call at the start of each round
+    for (var p = 0; p < Def.MAX_PLAYERS; p++) {
+        p_current_score[p] = 0;
+    }
+}
+
+
+function UpdateDisplay(playerID) {
+    // draws the popup for playerID, who must be the current player. called every frame for humans
+    var timer = p_popup_timer[playerID];
+    if (timer == 0) return;
+
+    const target = p_popup_score[playerID];
+    var shown = p_popup_shown[playerID];
+    if (shown < target) {
+        shown += (target - shown) / SCORE_COUNT_DIVISOR + 1;
+        if (shown > target) shown = target;
+    }
+
+    timer -= 1;
+    if (timer == 0) Cmn.ClearTextLines(SCORE_POPUP_LINE, SCORE_POPUP_LINE);
+    else screen.printfAt(SCORE_POPUP_LINE, "\x12\x1F+{}", shown); // redrawn every frame so new chat messages don't push it off its line
+
+    p_popup_shown[playerID] = shown;
+    p_popup_timer[playerID] = timer;
+}

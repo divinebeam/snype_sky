@@ -4,10 +4,12 @@ import defs as Def;
 import common as Cmn;
 import game as Game;
 import controls as Controls;
+import score as Scoring;
 import hero as Hero;
 import combat as Combat;
 import spawns as Spawn;
 import bots as Bot;
+import lobby as Lobby;
 
 
 var elapsed_time = 0; // frames
@@ -31,23 +33,19 @@ function onPluginStart() {
     randomize();
     Spawn.CollectSpawnPoints();
 
-    // Initialize Players: humans in their slots, bots in empty slots (if enabled)
+    // The game starts in the lobby: humans in their slots, empty slots start as bots if BOTS_ENABLED (the host can
+    // toggle them). every slot gets a hero in the staging area.
     const old_cp = getcurpl();
     for (var p = 0; p < Def.MAX_PLAYERS; p++) {
         if (playerexist(p)) Game.AddPlayer(p, 0);
-        else if (Def.BOTS_ENABLED) {
-            Game.AddPlayer(p, 1);
-            Bot.Init(p);
-        }
+        else if (Def.BOTS_ENABLED) Game.AddPlayer(p, 1);
 
-        if (Game.p_in_game[p]) {
-            setcurpl(p);
-            for (var i = 0; i < Def.MAX_PLAYERS; i++) {
-                SetAllianceStatus(i, Ally); // current player allies player i
-                Cmn.GetVision(i); // current player shares vision with player i
-            }
-            Hero.CreateParked(p);
+        setcurpl(p);
+        for (var i = 0; i < Def.MAX_PLAYERS; i++) {
+            SetAllianceStatus(i, Ally); // current player allies player i
+            Cmn.GetVision(i); // current player shares vision with player i
         }
+        Lobby.CreateStagingHero(p);
     }
     setcurpl(old_cp);
 }
@@ -56,7 +54,7 @@ function onPluginStart() {
 function afterTriggerExec() {
     // check for human players that left (bot slots never "exist")
     for (var p = 0; p < Def.MAX_PLAYERS; p++) {
-        if (Game.p_in_game[p] && !Game.p_is_bot[p] && !playerexist(p)) {
+        if (Game.IsHuman(p) && !playerexist(p)) {
             Hero.Remove(p);
             Game.RemovePlayer(p);
         }
@@ -68,7 +66,13 @@ function afterTriggerExec() {
     for (var playerID = 0; playerID < Def.MAX_PLAYERS; playerID++) {
         if (Game.p_in_game[playerID]) {
             setcurpl(playerID);
-            if (Hero.IsAlive(playerID)) {
+            if (Game.game_phase == Game.PHASE_LOBBY) {
+                // lobby: humans can move, dash, dodge and shoot (no damage); bots just stand in line
+                if (Game.IsHuman(playerID) && Hero.IsAlive(playerID)) {
+                    Controls.UpdateInput(playerID);
+                    UpdateHero(playerID);
+                }
+            } else if (Hero.IsAlive(playerID)) {
                 if (Game.p_is_bot[playerID]) Bot.Update(playerID);
                 else Controls.UpdateInput(playerID);
                 UpdateHero(playerID);
@@ -78,11 +82,13 @@ function afterTriggerExec() {
             } else {
                 Spawn.UpdateRespawn(playerID);
             }
+            if (!Game.p_is_bot[playerID]) Scoring.UpdateDisplay(playerID);
         }
     }
     setcurpl(old_cp);
 
-    Combat.ResolveDeaths();
+    if (Game.game_phase == Game.PHASE_LOBBY) Lobby.Update();
+    else Combat.ResolveDeaths();
 
     elapsed_time++;
 }

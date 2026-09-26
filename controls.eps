@@ -24,6 +24,15 @@ EUDRegisterObjectToNamespace("key_e", keypress_e);
 EUDRegisterObjectToNamespace("key_g", keypress_g);
 EUDRegisterObjectToNamespace("key_menu", keypress_menu);
 
+// Screen position of a left click (used by the lobby menu). MSQC line:
+//   NotTyping; MouseDown(LEFT); xy, 0x6CDDC4, 0x6CDDC8: menu_click_x, menu_click_y
+// sends the clicking player's on-screen mouse position (local memory) so everyone gets the same value.
+// MSQC sets these to -1 (0xFFFFFFFF) on frames without a click.
+const menu_click_x = PVariable();
+const menu_click_y = PVariable();
+EUDRegisterObjectToNamespace("menu_click_x", menu_click_x);
+EUDRegisterObjectToNamespace("menu_click_y", menu_click_y);
+
 
 // What each player wants to do this frame
 const p_want_dash = PVariable();
