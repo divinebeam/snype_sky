@@ -15,6 +15,9 @@ const ACCURACY_MAX = 200; // accuracy builds by 1 per frame while idle
 const ACCURACY_LOSS = 3; // accuracy lost per frame while moving
 const ACCURACY_DAMAGE_DIVISOR = 4; // bonus damage = accuracy / ACCURACY_DAMAGE_DIVISOR
 const INTERRUPT_ATTACK_DELAY = 6; // frames after a hit before the attack is interrupted, so the shooting animation can finish
+const REGEN_DELAY = 144; // frames without taking damage before hp starts regenerating
+const REGEN_RATE = 2; // hp regenerated per frame once regen has started
+const RIFLE_MEDIUM_RANGE = 11 * 32; // other players hear rifle_medium if the shot is inside the 22x22 tile square around their hero, rifle_far beyond
 
 
 const screen = StringBuffer();
@@ -25,6 +28,9 @@ const p_hp = PVariable(); // virtual hp, 0 = dies at the end of this frame
 const p_accuracy = PVariable();
 const p_weapon_cooldown = PVariable(); // hero weapon cooldown as of the last frame
 const p_interrupt_timer = PVariable(); // counts down after a hit, interrupts the attack at 0 (0 = nothing pending)
+const p_frames_since_shot = PVariable(); // 0 on the frame the hero fires, then counts up every frame
+const p_regen_timer = PVariable(); // frames since the hero last took damage, stops at REGEN_DELAY (= regenerating)
+const p_last_attacker = PVariable(); // player who last damaged this hero, NO_PLAYER if none since spawn
 const p_killer = PVariable(); // player who brought this hero to 0 hp, NO_PLAYER if none
 const p_kills = PVariable();
 const p_deaths = PVariable();
@@ -48,6 +54,9 @@ function Reset(playerID) {
     p_weapon_cooldown[playerID] = hero.groundWeaponCooldown;
     p_killer[playerID] = Def.NO_PLAYER;
     p_interrupt_timer[playerID] = 0;
+    p_frames_since_shot[playerID] = 0xFFFF; // "hasn't shot in a long time"
+    p_regen_timer[playerID] = 0;
+    p_last_attacker[playerID] = Def.NO_PLAYER;
     ClearDamageTaken(playerID);
 }
 
@@ -88,6 +97,29 @@ function CreateBloodEffect(playerID, x, y) {
 }
 
 
+function PlayRifleSound(shooterID) {
+    // shooter hears rifle_close. every other human hears rifle_medium if the shot is within the 22x22 tile square
+    // around their hero, otherwise rifle_far. the listen position is Hero.p_pos, which stops updating while the hero
+    // is dead, so dead players listen from where they died until they respawn
+    const shot_x, shot_y = Hero.p_pos_x[shooterID], Hero.p_pos_y[shooterID];
+    const old_cp = getcurpl();
+    for (var p = 0; p < Def.MAX_PLAYERS; p++) {
+        if (Game.p_in_game[p] && !Game.p_is_bot[p]) {
+            setcurpl(p);
+            if (p == shooterID) {
+                Def.PlaySoundRifleClose();
+            } else if (Hero.UnitExists(p)) {
+                const dx = Cmn.Abs(shot_x - Hero.p_pos_x[p]);
+                const dy = Cmn.Abs(shot_y - Hero.p_pos_y[p]);
+                if (dx <= RIFLE_MEDIUM_RANGE && dy <= RIFLE_MEDIUM_RANGE) Def.PlaySoundRifleMedium();
+                else Def.PlaySoundRifleFar();
+            }
+        }
+    }
+    setcurpl(old_cp);
+}
+
+
 function InterruptAutoAttack(playerID) {
     // setting alliances interrupts the hero's current attack (even if everyone is already allied),
     // which disables StarCraft's automatic repeat attack. delayed after a hit by INTERRUPT_ATTACK_DELAY.
@@ -112,6 +144,10 @@ function DamageHero(attackerID, victimID, damage) {
     p_hp[victimID] = hp - dealt;
     damage_taken[victimID * Def.MAX_PLAYERS + attackerID] += dealt;
     if (dealt > 0) {
+        p_regen_timer[victimID] = 0; // taking damage restarts the regen delay
+        p_last_attacker[victimID] = attackerID;
+    }
+    if (dealt > 0) {
         const hero = CUnit(Hero.p_cunit[victimID]);
         CreateBloodEffect(victimID, hero.posX, hero.posY);
     }
@@ -128,13 +164,18 @@ function KillHero(victimID) {
     setloc(Def.L_MAIN, death_x, death_y);
     Cmn.CreateUnitDeathAtLocation(Def.U_DEATH_EFFECT, victimID, Def.L_MAIN);
 
+    // the victim's camera goes to where they died
+    const old_cp = getcurpl();
+    setcurpl(victimID);
+    CenterView(Def.L_MAIN);
+    setcurpl(old_cp);
+
     const killerID = p_killer[victimID];
     if (killerID != Def.NO_PLAYER) {
         p_kills[killerID] += 1;
         Game.FormatPlayerName(killer_name, killerID);
         Game.FormatPlayerName(victim_name, victimID);
         f_printAll("{:s} \x04killed {:s}", killer_name, victim_name);
-        const old_cp = getcurpl();
         setcurpl(killerID);
         Def.PlaySoundKill();
         setcurpl(old_cp);
@@ -162,6 +203,25 @@ function ResolveDeaths() {
 
 // Per-frame updates (called from main.eps with playerID as the current player)
 
+function UpdateRegen(playerID) {
+    // after REGEN_DELAY frames without taking damage, hp regenerates by REGEN_RATE per frame up to HERO_MAX_HP
+    var regen_timer = p_regen_timer[playerID];
+    if (regen_timer < REGEN_DELAY) {
+        regen_timer += 1;
+        // out of the fight long enough: earlier attackers no longer get an assist if this hero dies
+        if (regen_timer == REGEN_DELAY) ClearDamageTaken(playerID);
+    } else {
+        var hp = p_hp[playerID];
+        if (hp > 0 && hp < HERO_MAX_HP) {
+            hp += REGEN_RATE;
+            if (hp > HERO_MAX_HP) hp = HERO_MAX_HP;
+            p_hp[playerID] = hp;
+        }
+    }
+    p_regen_timer[playerID] = regen_timer;
+}
+
+
 function UpdateAccuracy(playerID, is_moving) {
     // builds while idle, drains while moving
     const hero = CUnit(Hero.p_cunit[playerID]);
@@ -188,8 +248,11 @@ function UpdateAttack(playerID) {
         if (interrupt_timer == 0) InterruptAutoAttack(playerID);
     }
 
+    var frames_since_shot = p_frames_since_shot[playerID] + 1;
     const weapon_cooldown = hero.groundWeaponCooldown;
     if (weapon_cooldown > p_weapon_cooldown[playerID]) {
+        frames_since_shot = 0;
+        PlayRifleSound(playerID);
         const target = hero.orderTargetUnit;
         const victimID = GetHeroOwner(target);
         if (victimID != Def.NO_PLAYER && !Hero.IsDodging(victimID)) {
@@ -202,5 +265,6 @@ function UpdateAttack(playerID) {
         }
     }
     p_weapon_cooldown[playerID] = weapon_cooldown;
+    p_frames_since_shot[playerID] = frames_since_shot;
     p_interrupt_timer[playerID] = interrupt_timer;
 }

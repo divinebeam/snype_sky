@@ -5,21 +5,49 @@ import common as Cmn;
 import game as Game;
 import controls as Controls;
 import hero as Hero;
+import combat as Combat;
 import spawns as Spawn;
 
 
-const BOT_SIGHT_RANGE = 288; // pixels (ghost sight, 9 tiles): bots attack enemies closer than this
-const BOT_THINK_MIN = 6; // bots make a decision every BOT_THINK_MIN..BOT_THINK_MAX frames
-const BOT_THINK_MAX = 10;
+// Per-difficulty tuning, indexed by difficulty: [BOT_EASY, BOT_NORMAL, BOT_ELITE]
+const BOT_SIGHT_RANGE = [192, 256, 288]; // pixels: bots only notice enemies closer than this (288 = ghost sight)
+const BOT_THINK_MIN = [16, 10, 6]; // bots make a decision every BOT_THINK_MIN..BOT_THINK_MAX frames
+const BOT_THINK_MAX = [30, 16, 10];
+const BOT_REACTION_TIME = [24, 12, 0]; // frames after spotting a new target before the first attack
+const BOT_STRAFE_CHANCE = [0, 40, 80]; // % chance to strafe after each shot
 
+// Same for every difficulty
+const BOT_RETALIATE_WINDOW = 96; // frames after being hit that a bot with no target will go after its attacker
+const BOT_RETALIATE_MIN_HP = 50; // only retaliate above this hp (out of Combat.HERO_MAX_HP)
+const BOT_STRAFE_MIN = 48; // strafe distance range (pixels)
+const BOT_STRAFE_MAX = 128;
+const BOT_STRAFE_TIME = 16; // frames a strafe lasts before the bot decides again (and can re-attack)
+
+
+var difficulty = Def.BOT_DIFFICULTY; // one difficulty for all bots
 
 const p_bot_think_timer = PVariable();
+const p_bot_target = PVariable(); // enemy the bot is currently going after, NO_PLAYER if none
+const p_bot_reaction_timer = PVariable(); // counts down after spotting a new target, attacks at 0
+
+
+function SetDifficulty(newDifficulty) {
+    difficulty = newDifficulty;
+}
+
+
+function Init(playerID) {
+    // call once when a slot becomes a bot
+    p_bot_think_timer[playerID] = 0;
+    p_bot_target[playerID] = Def.NO_PLAYER;
+    p_bot_reaction_timer[playerID] = 0;
+}
 
 
 function FindTarget(playerID) {
-    // @return the closest living, attackable enemy within BOT_SIGHT_RANGE, or NO_PLAYER
+    // @return the closest living, attackable enemy within sight range, or NO_PLAYER
     var best = Def.NO_PLAYER;
-    var best_distance = BOT_SIGHT_RANGE + 1;
+    var best_distance = BOT_SIGHT_RANGE[difficulty] + 1;
     for (var p = 0; p < Def.MAX_PLAYERS; p++) {
         if (Game.IsEnemy(playerID, p) && Hero.IsAlive(p) && !Hero.IsDodging(p)) {
             const distance = Cmn.GetDistance(Hero.p_pos_x[playerID], Hero.p_pos_y[playerID], Hero.p_pos_x[p], Hero.p_pos_y[p]);
@@ -30,6 +58,18 @@ function FindTarget(playerID) {
         }
     }
     return best;
+}
+
+
+function GetRetaliationTarget(playerID) {
+    // @return who recently shot this bot, if the bot is healthy enough to fight back and they can be attacked, else NO_PLAYER.
+    // they may be out of sight range; the attack order walks the bot toward them.
+    const attackerID = Combat.p_last_attacker[playerID];
+    if (attackerID == Def.NO_PLAYER) return Def.NO_PLAYER;
+    if (Combat.p_regen_timer[playerID] >= BOT_RETALIATE_WINDOW) return Def.NO_PLAYER; // hit too long ago (regen timer = frames since last hit)
+    if (Combat.p_hp[playerID] <= BOT_RETALIATE_MIN_HP) return Def.NO_PLAYER;
+    if (!Game.IsEnemy(playerID, attackerID) || !Hero.IsAlive(attackerID) || Hero.IsDodging(attackerID)) return Def.NO_PLAYER;
+    return attackerID;
 }
 
 
@@ -59,22 +99,47 @@ function Roam(playerID) {
 }
 
 
+function Strafe(playerID) {
+    // moves to a random nearby position
+    const x, y = Hero.p_pos_x[playerID], Hero.p_pos_y[playerID];
+    const new_x, new_y = Cmn.MovePosTowards(x, y, Cmn.Random(0, 359), Cmn.Random(BOT_STRAFE_MIN, BOT_STRAFE_MAX));
+    if (!Cmn.PosIsOnMap(new_x, new_y)) return;
+    setloc(Def.L_MAIN, new_x, new_y);
+    Order(Def.U_HERO[playerID], playerID, Def.L_ANYWHERE, Move, Def.L_MAIN);
+}
+
+
 function Update(playerID) {
-    // minimal bot: attack the closest enemy in sight, otherwise roam between spawn points
+    // attack the closest enemy in sight (after a reaction delay for a new target), otherwise roam between spawn points.
+    // after each shot, may strafe to a nearby spot before attacking again. how well it does this depends on difficulty.
     Controls.p_want_dash[playerID] = 0;
     Controls.p_want_dodge[playerID] = 0;
 
     var think_timer = p_bot_think_timer[playerID];
     if (think_timer > 0) think_timer -= 1;
-    if (think_timer == 0) {
-        think_timer = Cmn.Random(BOT_THINK_MIN, BOT_THINK_MAX);
-        const targetID = FindTarget(playerID);
+    var reaction_timer = p_bot_reaction_timer[playerID];
+    if (reaction_timer > 0) reaction_timer -= 1;
+
+    // strafe once the shooting animation is done (same delay combat uses to interrupt the attack)
+    if (Combat.p_frames_since_shot[playerID] == Combat.INTERRUPT_ATTACK_DELAY && Cmn.Random(1, 100) <= BOT_STRAFE_CHANCE[difficulty]) {
+        Strafe(playerID);
+        think_timer = BOT_STRAFE_TIME;
+    } else if (think_timer == 0) {
+        think_timer = Cmn.Random(BOT_THINK_MIN[difficulty], BOT_THINK_MAX[difficulty]);
+        var targetID = FindTarget(playerID);
+        if (targetID == Def.NO_PLAYER) targetID = GetRetaliationTarget(playerID); // nobody in sight: fight back against whoever shot us
+        if (targetID != p_bot_target[playerID]) {
+            // new target (or lost the old one): react before the first attack
+            p_bot_target[playerID] = targetID;
+            reaction_timer = BOT_REACTION_TIME[difficulty];
+        }
         if (targetID != Def.NO_PLAYER) {
-            AttackTarget(playerID, targetID);
+            if (reaction_timer == 0) AttackTarget(playerID, targetID);
         } else {
             const hero = CUnit(Hero.p_cunit[playerID]);
             if (hero.orderID == Def.ORDER_PLAYER_GUARD) Roam(playerID); // idle: arrived, or an attack ended
         }
     }
     p_bot_think_timer[playerID] = think_timer;
+    p_bot_reaction_timer[playerID] = reaction_timer;
 }

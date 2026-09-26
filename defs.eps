@@ -5,6 +5,10 @@
 // Settings
 const DEBUG_ENABLED = 1;
 const BOTS_ENABLED = 1; // empty player slots are filled with bots at map start (TODO: host setting)
+const BOT_EASY = 0; // bot difficulty levels
+const BOT_NORMAL = 1;
+const BOT_ELITE = 2;
+const BOT_DIFFICULTY = BOT_EASY; // difficulty of all bots at map start (TODO: host setting)
 
 
 // Players
@@ -65,3 +69,6 @@ function PlaySoundDodge() { PlayWAV("staredit/wav/dodge.ogg"); }
 function PlaySoundDodgeReady() { PlayWAV("staredit/wav/dodge_ready.ogg"); }
 function PlaySoundHitmarker() { PlayWAV("staredit/wav/hitmarker.ogg"); }
 function PlaySoundKill() { PlayWAV("staredit/wav/kill.ogg"); }
+function PlaySoundRifleClose() { PlayWAV("staredit/wav/rifle_close.ogg"); }
+function PlaySoundRifleMedium() { PlayWAV("staredit/wav/rifle_medium.ogg"); }
+function PlaySoundRifleFar() { PlayWAV("staredit/wav/rifle_far.ogg"); }

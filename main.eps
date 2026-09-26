@@ -19,6 +19,7 @@ function UpdateHero(playerID) {
     Hero.UpdateDash(playerID);
     Hero.UpdateSpeed(playerID, is_moving);
     Hero.UpdateDodge(playerID);
+    Combat.UpdateRegen(playerID);
     Combat.UpdateAccuracy(playerID, is_moving);
     Combat.UpdateAttack(playerID);
 
@@ -34,7 +35,10 @@ function onPluginStart() {
     const old_cp = getcurpl();
     for (var p = 0; p < Def.MAX_PLAYERS; p++) {
         if (playerexist(p)) Game.AddPlayer(p, 0);
-        else if (Def.BOTS_ENABLED) Game.AddPlayer(p, 1);
+        else if (Def.BOTS_ENABLED) {
+            Game.AddPlayer(p, 1);
+            Bot.Init(p);
+        }
 
         if (Game.p_in_game[p]) {
             setcurpl(p);
