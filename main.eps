@@ -24,6 +24,7 @@ const L_STORAGE = [$L("storage1"), $L("storage2"), $L("storage3"), $L("storage4"
 const U_ANY = 229;
 const U_MEN = 230;
 const U_HERO = [1, 1, 1, 1, 1, 1, 1, 1]; // hero unit type per player (1 = Terran Ghost)
+const U_KAKARU = 94; // Kakaru (Twilight Critter), killed for the dash effect
 
 
 // Orders
@@ -40,6 +41,9 @@ const SPEED_SPRINT = 2000; // hero top speed while sprinting
 const SPRINT_MOVE_FRAMES = 40; // move time needed before sprinting starts
 const DODGE_RECHARGE = 120; // frames until dodge can be used again
 const DODGE_CLOAK_FRAMES = 12; // frames the hero stays cloaked (dodging) after pressing dodge
+const DASH_RECHARGE = 96; // frames until dash can be used again
+const DASH_TIME = 12; // frames the dash speed burst lasts
+const SPEED_DASH = 6000; // hero top speed while dashing, overrides base/sprint speed
 
 
 // Globals
@@ -57,6 +61,7 @@ const p_move_time = PVariable(); // frames spent moving, reset after MOVE_RESET_
 const p_still_time = PVariable(); // frames since the hero stopped moving
 const p_top_speed = PVariable(); // hero top speed, set with set_p_top_speed
 const p_dodge_timer = PVariable(); // counts down from DODGE_RECHARGE after dodging, 0 = dodge ready
+const p_dash_timer = PVariable(); // counts down from DASH_RECHARGE after dashing, 0 = dash ready
 
 
 // Input (set by the MSQC plugin, names must match the MSQC config in EUD Editor)
@@ -128,8 +133,16 @@ function SpawnHero(playerID, location) {
     p_still_time[playerID] = MOVE_RESET_FRAMES;
     set_p_top_speed(playerID, SPEED_BASE);
     p_dodge_timer[playerID] = 0;
+    p_dash_timer[playerID] = 0;
     ModifyUnitEnergy(1, U_HERO[playerID], playerID, L_ANYWHERE, 100); // dodge ready
     return 1;
+}
+
+
+function HeroIsDashing(playerID) {
+    // true during the first DASH_TIME frames after dashing
+    if (p_dash_timer[playerID] > DASH_RECHARGE - DASH_TIME) return 1;
+    return 0;
 }
 
 
@@ -200,9 +213,20 @@ function afterTriggerExec() {
                     if (p_still_time[playerID] == MOVE_RESET_FRAMES) p_move_time[playerID] = 0;
                 }
 
-                // sprint: faster after moving for a while, back to base speed as soon as the hero stops
+                // dash: D gives a DASH_TIME frame speed burst, then recharges
+                if (p_dash_timer[playerID] > 0) p_dash_timer[playerID] -= 1;
+                if (keypress_d[playerID] && p_dash_timer[playerID] == 0) {
+                    p_dash_timer[playerID] = DASH_RECHARGE;
+                    // dash effect: kakaru death at the hero's position
+                    setloc(L_0X0, hero_x, hero_y);
+                    Cmn.CreateUnitDeathAtLocation(U_KAKARU, playerID, L_0X0);
+                }
+
+                // top speed: sprint after moving for a while (dropped as soon as the hero stops), plus the dash bonus while dashing.
+                // recomputed every frame, so bonuses are removed automatically once they no longer apply.
                 var target_speed = SPEED_BASE;
                 if (is_moving && p_move_time[playerID] >= SPRINT_MOVE_FRAMES) target_speed = SPEED_SPRINT;
+                if (HeroIsDashing(playerID)) target_speed = SPEED_DASH;
                 if (p_top_speed[playerID] != target_speed) set_p_top_speed(playerID, target_speed);
 
                 // dodge: C cloaks the hero for DODGE_CLOAK_FRAMES frames, then recharges
@@ -225,7 +249,7 @@ function afterTriggerExec() {
                 // not emptied during the cloak frames, since cloak drains energy and decloaks at 0.
                 if (p_dodge_timer[playerID] > 0 && !HeroIsDodging(playerID)) hero.energy = 0;
 
-                eprintf("move time: {}", p_move_time[playerID]);
+                eprintf("key_d: {} | dash timer: {} | top speed: {}", keypress_d[playerID], p_dash_timer[playerID], p_top_speed[playerID]);
             } else {
                 // forget the hero once it dies, so p_cunit never points at a reused unit slot
                 p_cunit[playerID] = 0;
