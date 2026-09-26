@@ -1,0 +1,157 @@
+// Spawn points: collected from marker units placed in the map editor, picked on respawn.
+import defs as Def;
+import common as Cmn;
+import game as Game;
+import hero as Hero;
+import combat as Combat;
+
+
+const SPAWN_MARKER_PLAYER = $P9; // owner of the spawn marker units
+const SPAWN_MARKER_HP_FFA = 100; // marker hp 100 = free for all spawn, hp 1..MAX_TEAMS = that team's spawn
+const MAX_TEAMS = 4;
+const SPAWN_FFA = 0; // spawn types: SPAWN_FFA, or 1..MAX_TEAMS for team spawns
+const SPAWN_TYPE_COUNT = MAX_TEAMS + 1;
+const NO_SPAWN_TYPE = SPAWN_TYPE_COUNT;
+const MAX_SPAWNS = 32; // per zone, per spawn type
+const SPAWN_SAFE_RADIUS = [160, 96, 160, 160, 64, 160, 96, 160]; // per zone (pixels): a spawn is unsafe if an enemy hero is this close
+
+
+// Spawn point data, filled once at map start by CollectSpawnPoints.
+// each (zone, type) pair has its own list: list_id = zone * SPAWN_TYPE_COUNT + type
+const spawn_count = EUDArray(Def.ZONE_COUNT * SPAWN_TYPE_COUNT); // [list_id]
+const spawn_x = EUDArray(Def.ZONE_COUNT * SPAWN_TYPE_COUNT * MAX_SPAWNS); // [list_id * MAX_SPAWNS + index]
+const spawn_y = EUDArray(Def.ZONE_COUNT * SPAWN_TYPE_COUNT * MAX_SPAWNS);
+
+
+function GetPlayerSpawnType(playerID) {
+    return SPAWN_FFA; // TODO: team spawn type when playing teams
+}
+
+
+function GetZoneAtPos(x, y) {
+    // @return the zone whose location contains (x, y), or NO_ZONE
+    for (var z = 0; z < Def.ZONE_COUNT; z++) {
+        if (Cmn.PosIsInLocation(x, y, Def.L_ZONE[z])) return z;
+    }
+    return Def.NO_ZONE;
+}
+
+
+function GetSpawnTypeFromMarkerHP(hp) {
+    if (hp == SPAWN_MARKER_HP_FFA) return SPAWN_FFA;
+    if (hp >= 1 && hp <= MAX_TEAMS) return hp; // team number
+    return NO_SPAWN_TYPE;
+}
+
+
+function GetSpawnCount(zone, type) {
+    return spawn_count[zone * SPAWN_TYPE_COUNT + type];
+}
+
+
+function GetSpawnPoint(zone, type, index) {
+    // @return x, y of spawn point index (0 .. GetSpawnCount - 1)
+    const i = (zone * SPAWN_TYPE_COUNT + type) * MAX_SPAWNS + index;
+    return spawn_x[i], spawn_y[i];
+}
+
+
+function AddSpawnPoint(zone, type, x, y) {
+    // @return 1 if added, 0 if that zone's list for this type is full
+    const list_id = zone * SPAWN_TYPE_COUNT + type;
+    const count = spawn_count[list_id];
+    if (count >= MAX_SPAWNS) return 0;
+    spawn_x[list_id * MAX_SPAWNS + count] = x;
+    spawn_y[list_id * MAX_SPAWNS + count] = y;
+    spawn_count[list_id] = count + 1;
+    return 1;
+}
+
+
+function CollectSpawnPoints() {
+    // reads the spawn marker units placed in the map editor into the spawn lists, then removes the markers
+    foreach (unit : EUDLoopCUnit()) {
+        if (unit.unitType == Def.U_SPAWN_MARKER && unit.playerID == SPAWN_MARKER_PLAYER) {
+            const x, y = unit.posX, unit.posY;
+            const hp = (unit.hp + 128) / 256; // marker max hp is 100, so this is the hp % set in the editor
+            const zone = GetZoneAtPos(x, y);
+            const type = GetSpawnTypeFromMarkerHP(hp);
+            if (zone == Def.NO_ZONE || type == NO_SPAWN_TYPE) {
+                if (Def.DEBUG_ENABLED) f_printAll("\x06Spawn marker at ({}, {}) skipped: zone {}, hp {}", x, y, zone, hp);
+            } else if (!AddSpawnPoint(zone, type, x, y)) {
+                if (Def.DEBUG_ENABLED) f_printAll("\x06Spawn marker at ({}, {}) skipped: zone {} type {} is full", x, y, zone, type);
+            }
+        }
+    }
+    RemoveUnit(Def.U_SPAWN_MARKER, SPAWN_MARKER_PLAYER);
+
+    if (Def.DEBUG_ENABLED) {
+        for (var z = 0; z < Def.ZONE_COUNT; z++) {
+            f_printAll("zone {}: ffa {} | t1 {} | t2 {} | t3 {} | t4 {}", z, GetSpawnCount(z, 0), GetSpawnCount(z, 1), GetSpawnCount(z, 2), GetSpawnCount(z, 3), GetSpawnCount(z, 4));
+        }
+    }
+}
+
+
+function SpawnIsSafe(playerID, x, y) {
+    // @return 0 if an enemy hero is within the current zone's SPAWN_SAFE_RADIUS of (x, y)
+    const radius = SPAWN_SAFE_RADIUS[Game.current_zone];
+    for (var p = 0; p < Def.MAX_PLAYERS; p++) {
+        if (Game.IsEnemy(playerID, p) && Hero.IsAlive(p) && Cmn.GetDistance(x, y, Hero.p_pos_x[p], Hero.p_pos_y[p]) <= radius) return 0;
+    }
+    return 1;
+}
+
+
+function PickSpawnPoint(playerID) {
+    // picks a random spawn point in the current zone for the player's spawn type, skipping ones with an enemy nearby.
+    // if every spawn point has an enemy nearby, any one is used.
+    // @return x, y, found (found = 0 if the zone has no spawn points of that type)
+    const zone = Game.current_zone;
+    const type = GetPlayerSpawnType(playerID);
+    const count = GetSpawnCount(zone, type);
+    if (count == 0) return 0, 0, 0;
+    const start = Cmn.Random(0, count - 1);
+    var index = start;
+    for (var n = 0; n < count; n++) {
+        const x, y = GetSpawnPoint(zone, type, index);
+        if (SpawnIsSafe(playerID, x, y)) return x, y, 1;
+        index++;
+        if (index >= count) index = 0;
+    }
+    const fallback_x, fallback_y = GetSpawnPoint(zone, type, start);
+    return fallback_x, fallback_y, 1;
+}
+
+
+function RespawnHero(playerID) {
+    // moves the player's parked hero from storage to a spawn point and resets it.
+    // @return 1 on success, 0 if the zone has no spawn points (the hero stays parked)
+    const x, y, found = PickSpawnPoint(playerID);
+    if (!found) {
+        f_printAll("\x06Warning: zone {} has no spawn markers for spawn type {}", Game.current_zone, GetPlayerSpawnType(playerID));
+        return 0;
+    }
+    setloc(Def.L_MAIN, x, y);
+    MoveUnit(1, Def.U_HERO[playerID], playerID, Def.L_STORAGE[playerID], Def.L_MAIN);
+    Order(Def.U_HERO[playerID], playerID, Def.L_ANYWHERE, Move, Def.L_MAIN); // clear orders left over from before death
+    Hero.Reset(playerID);
+    Combat.Reset(playerID);
+
+    const old_cp = getcurpl();
+    setcurpl(playerID);
+    CenterView(Def.L_MAIN);
+    setcurpl(old_cp);
+    return 1;
+}
+
+
+function UpdateRespawn(playerID) {
+    // dead and parked in storage: respawn when the timer runs out (retry later if there's no spawn point)
+    var respawn_timer = Hero.p_respawn_timer[playerID];
+    if (respawn_timer > 0) respawn_timer -= 1;
+    if (respawn_timer == 0) {
+        if (!RespawnHero(playerID)) respawn_timer = Hero.RESPAWN_TIME;
+    }
+    Hero.p_respawn_timer[playerID] = respawn_timer;
+}

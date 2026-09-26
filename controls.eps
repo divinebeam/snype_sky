@@ -1,0 +1,44 @@
+// Player input: MSQC key/mouse variables, and what each player "wants" to do this frame.
+// The hero code only reads the wants, so it works the same for humans (filled here from keys) and bots (filled by bots.eps).
+import defs as Def;
+import common as Cmn;
+
+
+// MSQC (names must match the MSQC config in EUD Editor). values are nonzero only on the frame of the key event
+const mouse_left_down = PVariable();    // MouseDown(LEFT): 1
+const mouse_right_down = PVariable();   // MouseDown(RIGHT): 1
+const keypress_c = PVariable();         // KeyDown(C): 1
+const keypress_d = PVariable();         // KeyDown(D): 1
+const keypress_z = PVariable();         // KeyUp(Z): 1
+const keypress_x = PVariable();         // KeyUp(X): 1
+const keypress_e = PVariable();         // KeyDown(E): 1
+const keypress_g = PVariable();         // KeyDown(G): 1, KeyUp(G): 2
+const keypress_menu = PVariable();      // KeyUp(L): 1
+EUDRegisterObjectToNamespace("mouseleftdown", mouse_left_down);
+EUDRegisterObjectToNamespace("mouserightdown", mouse_right_down);
+EUDRegisterObjectToNamespace("key_c", keypress_c);
+EUDRegisterObjectToNamespace("key_d", keypress_d);
+EUDRegisterObjectToNamespace("key_z", keypress_z);
+EUDRegisterObjectToNamespace("key_x", keypress_x);
+EUDRegisterObjectToNamespace("key_e", keypress_e);
+EUDRegisterObjectToNamespace("key_g", keypress_g);
+EUDRegisterObjectToNamespace("key_menu", keypress_menu);
+
+
+// What each player wants to do this frame
+const p_want_dash = PVariable();
+const p_want_dodge = PVariable();
+
+
+function GetMousePosition(playerID) {
+    // MSQC moves each player's MouseLoc to their mouse
+    const x, y = Cmn.GetLocationPoint(Def.L_MOUSE[playerID]);
+    return x, y;
+}
+
+
+function UpdateInput(playerID) {
+    // human: wants come straight from the MSQC keys
+    p_want_dash[playerID] = keypress_d[playerID];
+    p_want_dodge[playerID] = keypress_c[playerID];
+}

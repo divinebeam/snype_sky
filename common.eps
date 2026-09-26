@@ -1,8 +1,9 @@
 // Shared math, geometry and utility helpers. No game state lives here.
+import defs as Def;
 
-// scratch locations used by the helpers below (full location list is in main.eps)
-const L_MAIN = $L("main");
-const L_BUFFER = $L("createbuffer");
+// scratch locations used by the helpers below
+const L_MAIN = Def.L_MAIN;
+const L_BUFFER = Def.L_BUFFER;
 
 
 // @return random integer in [min, max] (negative bounds wrap correctly)
@@ -136,6 +137,19 @@ function GetLocationSize(location) {
 }
 
 
+function GetLocationRect(location) {
+    // @return left, top, right, bottom of the location in pixels
+    const epd = EPD(0x58DC4C) + location * 5;
+    return dwread_epd(epd), dwread_epd(epd + 1), dwread_epd(epd + 2), dwread_epd(epd + 3);
+}
+
+
+function PosIsInLocation(positionx, positiony, location) {
+    const left, top, right, bottom = GetLocationRect(location);
+    return PosIsWithinRect(positionx, positiony, left, right, top, bottom);
+}
+
+
 function CenterLoc(location, x, y) {
     // moves the location so it is centered on (x, y), keeping its size
     const width, height = GetLocationSize(location);
@@ -174,22 +188,10 @@ function GetCountOfUnit(playerID, unitType) {
 }
 
 
-// raw CUnit byte fields (unit is the CUnit value, i.e. its EPD)
-
-function GetUnitIsCloaked(unit) {
-    return bread_epd(unit + 0x096 / 4, 0x096 % 4);
-}
-
-
-function SetUnitSecondaryOrder(unit, orderID) {
-    bwrite_epd(unit + 0x0A6 / 4, 0x0A6 % 4, orderID);
-}
-
-
 function CreateCUnit(unitType, playerID, location) : CUnit {
     // creates a unit at L_BUFFER, then moves it to location
     // @return the new unit, or 0 if it could not be placed at location
-    const newUnit = CUnit.from_read(EPD(0x628438)); // next free unit slot
+    const newUnit = CUnit.from_next(); // the slot the next created unit will use
     CreateUnit(1, unitType, L_BUFFER, playerID);
     MoveUnit(1, unitType, playerID, L_BUFFER, location);
     if (Bring(playerID, AtLeast, 1, unitType, L_BUFFER)) {
@@ -217,10 +219,10 @@ function CreateImageSpriteAtLocation(playerID, location, imageID, drawFunc, iscr
 
 
 function CreateUnitDeathAtLocation(unitType, playerID, location) {
-    CreateUnit(1, unitType, L_BUFFER, playerID);
-    MoveUnit(1, unitType, playerID, L_BUFFER, location);
-    if (Bring(playerID, AtLeast, 1, unitType, L_BUFFER)) RemoveUnitAt(All, unitType, L_BUFFER, playerID);
-    KillUnit(unitType, playerID);
+    // creates a unit at location and kills it for its death animation/sound.
+    // only the created unit dies, so it's safe to use a unit type the player already owns.
+    const unit = CreateCUnit(unitType, playerID, location);
+    if (unit != 0) unit.die();
 }
 
 

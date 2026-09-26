@@ -1,0 +1,41 @@
+// Game state shared by every system: game mode, current zone, and who is playing (humans and bots).
+import defs as Def;
+
+
+// Game modes
+const GAME_MODE_FFA = 0;
+
+
+var game_mode = GAME_MODE_FFA;
+var current_zone = Def.ZONE_BADLANDS;
+var players_in_game = 0;
+
+const p_in_game = PVariable(); // 1 = human or bot taking part
+const p_is_bot = PVariable(); // 1 = empty slot controlled by bot AI
+
+
+function AddPlayer(playerID, isBot) {
+    p_in_game[playerID] = 1;
+    p_is_bot[playerID] = isBot;
+    players_in_game++;
+}
+
+
+function RemovePlayer(playerID) {
+    p_in_game[playerID] = 0;
+    players_in_game--;
+}
+
+
+function IsEnemy(playerA, playerB) {
+    if (playerA == playerB) return 0;
+    if (game_mode == GAME_MODE_FFA) return 1;
+    return 0; // TODO: teams
+}
+
+
+function FormatPlayerName(dst, playerID) {
+    // writes the player's colored name into dst. bots have no player name, so they get "Bot N"
+    if (p_is_bot[playerID]) sprintf(dst, "{:c}Bot {}", playerID, playerID + 1);
+    else sprintf(dst, "{:c}{:n}", playerID, playerID);
+}

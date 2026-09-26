@@ -1,3 +1,52 @@
 PROJECT SUMMARY:
 	Snype sky is a redo of snype boiz. It is a arena shooter map where you control 1 ghost unit and earn killstreaks similar to call of duty.
-	At the start of the map players will choose an arena and gametype/whatever team configuration/whatever settings.
+	At the start of the map players will choose a arena or zone and gametype/whatever team configuration/whatever settings.
+
+
+SPAWN SYSTEM:
+	Spawn points will be marked by placing a alexei stukov ghosts on the map (unit id 100).
+	Their hitpoints will be modified to communicate information to the system. If a placed spawn point marker has hitpoints 100 = free for all spawn position -
+	hitpoints 1 = team 1 spawn point, hitpoints 2 = team 2 spawn point, etc. There will be more types of spawn points in the future for different game modes.
+	This whole thing is so that I can easily edit spawn points in a map editor.
+	Then in code we'll go over each pre-placed spawn point marker unit and record its position and type in an array or something.
+	Also eps supports objects like this as an example (maybe this opens up the possibility of better architecture):
+		object Vector2 {
+			var x, y;
+		};
+		object Missile {
+			var vector: Vector2;  // direction vector
+			var velocity;  // current speed of missile
+			var x, y;  // current x, y
+		};
+
+		function updateMissile(missile: Missile) {
+			// calculate vector with velocity as length, and direction vector
+			const directionVector = missile.vector;
+			const directionX, directionY = directionVector.x, directionVector.y;
+			const velocity = missile.velocity;
+			const x, y = missile.x, missile.y;
+			// velocity*velocity : directionX*directionX + directionY*directionY = new_x*new_x : x*x;
+			// new_x = sqrt(velocity*velocity*x*x/(directionX*directionX + directionY*directionY))
+			const velocitySquare = velocity*velocity;
+			const directionHypotenuseSquare = directionX*directionX + directionY*directionY;
+			const dx = sqrt(velocitySquare * x * x / directionHypotenuseSquare);
+			const dy = sqrt(velocitySquare * y * y / directionHypotenuseSquare);
+			const new_x = x + dx;
+			const new_y = y + dy;
+			missile.x = new_x;
+			missile.y = new_y;
+		}
+	We also have to have the spawn points organized by zone. I think we could do that by defining the rectangle of where a zone is -
+	and then checking if the spawn markers position is inside the rectangle, if it is then it belongs to that zone.
+	Zones should have a max of 32 generic/free for all spawn points. Implementation can start with that for now.
+	Generic spawn markers will have 100hp.
+
+ZONES:
+	Badlands
+	Warehouse
+	Caves
+	Overpass
+	Laboratory
+	Market
+	Brescent Byne
+	Doom

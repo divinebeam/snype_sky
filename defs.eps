@@ -1,0 +1,67 @@
+// Map-wide definitions: settings, locations, unit IDs, orders, zones, sounds.
+// Imports nothing, so every other module can import it (as Def).
+
+
+// Settings
+const DEBUG_ENABLED = 1;
+const BOTS_ENABLED = 1; // empty player slots are filled with bots at map start (TODO: host setting)
+
+
+// Players
+const MAX_PLAYERS = 8;
+const NO_PLAYER = MAX_PLAYERS; // "no player" value for player ID variables
+const FRAMES_PER_SECOND = 24;
+
+
+// Locations
+const L_ANYWHERE = $L("Anywhere");
+const L_MAIN = $L("main"); // This is the utility location that bounces around the map where ever it is needed.
+const L_BUFFER = $L("createbuffer"); // This is a pre-creation location for creating units and avoiding unplaceable errors if the units cannot be moved to the location after the buffer.
+const L_PATHABLE = $L("pathable"); // This is used to move a unit to a position, then check if the unit was offset from the exact position to determine if there is another unit there. The special "pathable" unit is stored at L_PATHABLE.
+const L_STAGING = $L("staging"); // This is the location where the main menu is/the staging area for the players.
+const L_HEIGHT0 = $L("height0"); // These are used to determine what location height a position is.
+const L_HEIGHT1 = $L("height1");
+const L_HEIGHT2 = $L("height2");
+const L_0X0 = $L("0x0"); // Pixel, can be used also as a secondary version of L_MAIN, if both are needed.
+const L_1X1 = $L("1x1"); // 1 tile, 32x32 pixels.
+const L_MOUSE = [$L("mouseloc1"), $L("mouseloc2"), $L("mouseloc3"), $L("mouseloc4"), $L("mouseloc5"), $L("mouseloc6"), $L("mouseloc7"), $L("mouseloc8")];
+const L_STORAGE = [$L("storage1"), $L("storage2"), $L("storage3"), $L("storage4"), $L("storage5"), $L("storage6"), $L("storage7"), $L("storage8")];
+const L_ZONE = [$L("badlands"), $L("warehouse"), $L("caves"), $L("overpass"), $L("laboratory"), $L("market"), $L("brescentbyne"), $L("doom")];
+
+
+// Zones (index into L_ZONE)
+const ZONE_BADLANDS = 0;
+const ZONE_WAREHOUSE = 1;
+const ZONE_CAVES = 2;
+const ZONE_OVERPASS = 3;
+const ZONE_LABORATORY = 4;
+const ZONE_MARKET = 5;
+const ZONE_BRESCENTBYNE = 6;
+const ZONE_DOOM = 7;
+const ZONE_COUNT = 8;
+const NO_ZONE = ZONE_COUNT;
+
+
+// Units
+const U_ANY = 229;
+const U_MEN = 230;
+const U_HERO = [1, 1, 1, 1, 1, 1, 1, 1]; // hero unit type per player (1 = Terran Ghost)
+const U_KAKARU = 94; // Kakaru (Twilight Critter), killed for the dash effect
+const U_DEATH_EFFECT = 1; // Terran Ghost, killed where a hero dies
+const U_BLOOD_EFFECT = 37; // Zergling, created burrowed + invincible and killed where a hero takes damage
+const U_SPAWN_MARKER = 100; // Alexei Stukov, placed in the map editor to mark spawn points (max hp set to 100)
+
+
+// Orders
+const ORDER_PLAYER_GUARD = 3; // idle
+const ORDER_ATTACK_UNIT = 10;
+const ORDER_CLOAK = 109;
+const ORDER_DECLOAK = 110;
+
+
+// Sounds (play for the current player). all sound file paths live here.
+
+function PlaySoundDodge() { PlayWAV("staredit/wav/dodge.ogg"); }
+function PlaySoundDodgeReady() { PlayWAV("staredit/wav/dodge_ready.ogg"); }
+function PlaySoundHitmarker() { PlayWAV("staredit/wav/hitmarker.ogg"); }
+function PlaySoundKill() { PlayWAV("staredit/wav/kill.ogg"); }

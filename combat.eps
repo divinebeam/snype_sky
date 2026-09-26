@@ -1,0 +1,206 @@
+// Combat: virtual hp, accuracy, shooting and damage, deaths, kill credit, and combat effects.
+import defs as Def;
+import common as Cmn;
+import game as Game;
+import hero as Hero;
+
+
+const HERO_MAX_HP = 100; // virtual hp, copied to the unit's hp for display (unit max hp should be 100)
+const BASE_DAMAGE = 65;
+const MIN_DAMAGE = 25;
+const MAX_DAMAGE = 100;
+const DAMAGE_FALLOFF = 4; // damage lost per DAMAGE_FALLOFF_DISTANCE pixels to the target
+const DAMAGE_FALLOFF_DISTANCE = 16;
+const ACCURACY_MAX = 200; // accuracy builds by 1 per frame while idle
+const ACCURACY_LOSS = 3; // accuracy lost per frame while moving
+const ACCURACY_DAMAGE_DIVISOR = 4; // bonus damage = accuracy / ACCURACY_DAMAGE_DIVISOR
+const INTERRUPT_ATTACK_DELAY = 6; // frames after a hit before the attack is interrupted, so the shooting animation can finish
+
+
+const screen = StringBuffer();
+const killer_name = Db(64);
+const victim_name = Db(64);
+
+const p_hp = PVariable(); // virtual hp, 0 = dies at the end of this frame
+const p_accuracy = PVariable();
+const p_weapon_cooldown = PVariable(); // hero weapon cooldown as of the last frame
+const p_interrupt_timer = PVariable(); // counts down after a hit, interrupts the attack at 0 (0 = nothing pending)
+const p_killer = PVariable(); // player who brought this hero to 0 hp, NO_PLAYER if none
+const p_kills = PVariable();
+const p_deaths = PVariable();
+const p_assists = PVariable();
+const damage_taken = EUDArray(Def.MAX_PLAYERS * Def.MAX_PLAYERS); // [victim * MAX_PLAYERS + attacker], damage since the victim's last spawn
+
+
+function ClearDamageTaken(victimID) {
+    for (var a = 0; a < Def.MAX_PLAYERS; a++) {
+        damage_taken[victimID * Def.MAX_PLAYERS + a] = 0;
+    }
+}
+
+
+function Reset(playerID) {
+    // fresh-life combat state (on respawn)
+    const hero = CUnit(Hero.p_cunit[playerID]);
+    p_hp[playerID] = HERO_MAX_HP;
+    hero.hp = HERO_MAX_HP * 256;
+    p_accuracy[playerID] = 0;
+    p_weapon_cooldown[playerID] = hero.groundWeaponCooldown;
+    p_killer[playerID] = Def.NO_PLAYER;
+    p_interrupt_timer[playerID] = 0;
+    ClearDamageTaken(playerID);
+}
+
+
+function GetHeroOwner(unit) {
+    // @return the player whose living hero this unit is, or NO_PLAYER
+    for (var p = 0; p < Def.MAX_PLAYERS; p++) {
+        if (Hero.p_cunit[p] != 0 && Hero.p_cunit[p] == unit && !Hero.p_dead[p]) return p;
+    }
+    return Def.NO_PLAYER;
+}
+
+
+function GetShotDamage(attackerID, distance) {
+    var damage = BASE_DAMAGE + p_accuracy[attackerID] / ACCURACY_DAMAGE_DIVISOR;
+    if (distance > DAMAGE_FALLOFF_DISTANCE) {
+        const falloff = (distance / DAMAGE_FALLOFF_DISTANCE) * DAMAGE_FALLOFF;
+        if (falloff >= damage) damage = 0;
+        else damage -= falloff;
+    }
+    if (damage < MIN_DAMAGE) damage = MIN_DAMAGE;
+    if (damage > MAX_DAMAGE) damage = MAX_DAMAGE;
+    return damage;
+}
+
+
+function CreateBloodEffect(playerID, x, y) {
+    // burrowed zergling killed at (x, y): its death leaves a blood splat. burrowed units don't collide, so it lands exactly on (x, y)
+    const unit = CUnit.from_next(); // the slot the next created unit will use
+    CreateUnitWithProperties(1, Def.U_BLOOD_EFFECT, Def.L_BUFFER, playerID, UnitProperty(burrowed = true, invincible = true));
+    setloc(Def.L_MAIN, x, y);
+    MoveUnit(1, Def.U_BLOOD_EFFECT, playerID, Def.L_BUFFER, Def.L_MAIN);
+    if (Bring(playerID, AtLeast, 1, Def.U_BLOOD_EFFECT, Def.L_BUFFER)) {
+        RemoveUnitAt(All, Def.U_BLOOD_EFFECT, Def.L_BUFFER, playerID);
+        return;
+    }
+    unit.die();
+}
+
+
+function InterruptAutoAttack(playerID) {
+    // setting alliances interrupts the hero's current attack (even if everyone is already allied),
+    // which disables StarCraft's automatic repeat attack. delayed after a hit by INTERRUPT_ATTACK_DELAY.
+    const old_cp = getcurpl();
+    setcurpl(playerID);
+    for (var i = 0; i < Def.MAX_PLAYERS; i++) {
+        SetAllianceStatus(i, Ally);
+    }
+    setcurpl(old_cp);
+}
+
+
+function DamageHero(attackerID, victimID, damage) {
+    // lowers virtual hp only; deaths are resolved once per frame in ResolveDeaths
+    const hp = p_hp[victimID];
+    if (hp == 0) return; // already dying this frame
+    var dealt = damage;
+    if (dealt >= hp) {
+        dealt = hp;
+        p_killer[victimID] = attackerID;
+    }
+    p_hp[victimID] = hp - dealt;
+    damage_taken[victimID * Def.MAX_PLAYERS + attackerID] += dealt;
+    if (dealt > 0) {
+        const hero = CUnit(Hero.p_cunit[victimID]);
+        CreateBloodEffect(victimID, hero.posX, hero.posY);
+    }
+}
+
+
+function KillHero(victimID) {
+    const hero = CUnit(Hero.p_cunit[victimID]);
+    const death_x, death_y = hero.posX, hero.posY;
+    Hero.Park(victimID);
+    p_deaths[victimID] += 1;
+
+    // death effect, created after the hero is moved away so it doesn't get pushed aside by the hero
+    setloc(Def.L_MAIN, death_x, death_y);
+    Cmn.CreateUnitDeathAtLocation(Def.U_DEATH_EFFECT, victimID, Def.L_MAIN);
+
+    const killerID = p_killer[victimID];
+    if (killerID != Def.NO_PLAYER) {
+        p_kills[killerID] += 1;
+        Game.FormatPlayerName(killer_name, killerID);
+        Game.FormatPlayerName(victim_name, victimID);
+        f_printAll("{:s} \x04killed {:s}", killer_name, victim_name);
+        const old_cp = getcurpl();
+        setcurpl(killerID);
+        Def.PlaySoundKill();
+        setcurpl(old_cp);
+    }
+    for (var a = 0; a < Def.MAX_PLAYERS; a++) {
+        if (a != killerID && a != victimID && damage_taken[victimID * Def.MAX_PLAYERS + a] > 0) p_assists[a] += 1;
+    }
+    ClearDamageTaken(victimID);
+}
+
+
+function ResolveDeaths() {
+    // runs after every player's shots this frame, so shots fired on the same frame all land (trades are possible)
+    for (var p = 0; p < Def.MAX_PLAYERS; p++) {
+        if (Hero.p_cunit[p] == 0 || Hero.p_dead[p]) continue;
+        if (p_hp[p] == 0) {
+            KillHero(p);
+        } else {
+            const hero = CUnit(Hero.p_cunit[p]);
+            hero.hp = p_hp[p] * 256; // display only
+        }
+    }
+}
+
+
+// Per-frame updates (called from main.eps with playerID as the current player)
+
+function UpdateAccuracy(playerID, is_moving) {
+    // builds while idle, drains while moving
+    const hero = CUnit(Hero.p_cunit[playerID]);
+    var accuracy = p_accuracy[playerID];
+    if (hero.orderID == Def.ORDER_PLAYER_GUARD) {
+        if (accuracy < ACCURACY_MAX) accuracy += 1;
+    } else if (is_moving) {
+        if (accuracy >= ACCURACY_LOSS) accuracy -= ACCURACY_LOSS;
+        else accuracy = 0;
+    }
+    p_accuracy[playerID] = accuracy;
+}
+
+
+function UpdateAttack(playerID) {
+    // the weapon cooldown jumps up on the frame the hero fires
+    // (compared to last frame instead of an exact value, since BW randomizes cooldown by a frame or two)
+    const hero = CUnit(Hero.p_cunit[playerID]);
+
+    // delayed interrupt from an earlier hit (stops StarCraft's automatic repeat attack)
+    var interrupt_timer = p_interrupt_timer[playerID];
+    if (interrupt_timer > 0) {
+        interrupt_timer -= 1;
+        if (interrupt_timer == 0) InterruptAutoAttack(playerID);
+    }
+
+    const weapon_cooldown = hero.groundWeaponCooldown;
+    if (weapon_cooldown > p_weapon_cooldown[playerID]) {
+        const target = hero.orderTargetUnit;
+        const victimID = GetHeroOwner(target);
+        if (victimID != Def.NO_PLAYER && !Hero.IsDodging(victimID)) {
+            const distance = Cmn.GetDistance(hero.posX, hero.posY, target.posX, target.posY);
+            const damage = GetShotDamage(playerID, distance);
+            DamageHero(playerID, victimID, damage);
+            screen.printf("\x12\x11HIT {}", damage);
+            Def.PlaySoundHitmarker();
+            interrupt_timer = INTERRUPT_ATTACK_DELAY;
+        }
+    }
+    p_weapon_cooldown[playerID] = weapon_cooldown;
+    p_interrupt_timer[playerID] = interrupt_timer;
+}

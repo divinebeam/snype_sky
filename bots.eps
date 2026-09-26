@@ -1,0 +1,80 @@
+// Bot AI for empty player slots. Bots decide what they want each frame (controls.eps wants) and give their hero orders;
+// everything else (movement, abilities, combat, respawn) runs through the same code as humans.
+import defs as Def;
+import common as Cmn;
+import game as Game;
+import controls as Controls;
+import hero as Hero;
+import spawns as Spawn;
+
+
+const BOT_SIGHT_RANGE = 288; // pixels (ghost sight, 9 tiles): bots attack enemies closer than this
+const BOT_THINK_MIN = 6; // bots make a decision every BOT_THINK_MIN..BOT_THINK_MAX frames
+const BOT_THINK_MAX = 10;
+
+
+const p_bot_think_timer = PVariable();
+
+
+function FindTarget(playerID) {
+    // @return the closest living, attackable enemy within BOT_SIGHT_RANGE, or NO_PLAYER
+    var best = Def.NO_PLAYER;
+    var best_distance = BOT_SIGHT_RANGE + 1;
+    for (var p = 0; p < Def.MAX_PLAYERS; p++) {
+        if (Game.IsEnemy(playerID, p) && Hero.IsAlive(p) && !Hero.IsDodging(p)) {
+            const distance = Cmn.GetDistance(Hero.p_pos_x[playerID], Hero.p_pos_y[playerID], Hero.p_pos_x[p], Hero.p_pos_y[p]);
+            if (distance < best_distance) {
+                best = p;
+                best_distance = distance;
+            }
+        }
+    }
+    return best;
+}
+
+
+function AttackTarget(playerID, targetID) {
+    // gives the bot's hero an attack order on the target by writing it into the unit, like a player's right-click would.
+    // (attack-move wouldn't work: everyone is allied, so it never picks a target on its own)
+    const hero = CUnit(Hero.p_cunit[playerID]);
+    const target = CUnit(Hero.p_cunit[targetID]);
+    if (hero.orderID == Def.ORDER_ATTACK_UNIT && hero.orderTargetUnit == target) return; // already on it
+    hero.orderTargetUnit = target;
+    hero.orderTargetX = target.posX;
+    hero.orderTargetY = target.posY;
+    hero.orderState = 0;
+    hero.orderID = Def.ORDER_ATTACK_UNIT;
+}
+
+
+function Roam(playerID) {
+    // walks to a random spawn point in the current zone
+    const zone = Game.current_zone;
+    const type = Spawn.GetPlayerSpawnType(playerID);
+    const count = Spawn.GetSpawnCount(zone, type);
+    if (count == 0) return;
+    const x, y = Spawn.GetSpawnPoint(zone, type, Cmn.Random(0, count - 1));
+    setloc(Def.L_MAIN, x, y);
+    Order(Def.U_HERO[playerID], playerID, Def.L_ANYWHERE, Move, Def.L_MAIN);
+}
+
+
+function Update(playerID) {
+    // minimal bot: attack the closest enemy in sight, otherwise roam between spawn points
+    Controls.p_want_dash[playerID] = 0;
+    Controls.p_want_dodge[playerID] = 0;
+
+    var think_timer = p_bot_think_timer[playerID];
+    if (think_timer > 0) think_timer -= 1;
+    if (think_timer == 0) {
+        think_timer = Cmn.Random(BOT_THINK_MIN, BOT_THINK_MAX);
+        const targetID = FindTarget(playerID);
+        if (targetID != Def.NO_PLAYER) {
+            AttackTarget(playerID, targetID);
+        } else {
+            const hero = CUnit(Hero.p_cunit[playerID]);
+            if (hero.orderID == Def.ORDER_PLAYER_GUARD) Roam(playerID); // idle: arrived, or an attack ended
+        }
+    }
+    p_bot_think_timer[playerID] = think_timer;
+}

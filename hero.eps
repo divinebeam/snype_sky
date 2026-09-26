@@ -1,0 +1,217 @@
+// The player's hero unit: its lifecycle (create, park in storage while dead, reset on respawn),
+// movement, sprint, dash and dodge.
+import defs as Def;
+import common as Cmn;
+import controls as Controls;
+
+
+// Movement
+const MOVE_RESET_FRAMES = 4; // frames standing still before move time resets
+const SPEED_BASE = 1400; // hero top speed
+const SPEED_SPRINT = 2000; // hero top speed while sprinting
+const SPRINT_MOVE_FRAMES = 40; // move time needed before sprinting starts
+
+// Abilities
+const DODGE_RECHARGE = 120; // frames until dodge can be used again
+const DODGE_CLOAK_FRAMES = 12; // frames the hero stays cloaked (dodging) after pressing dodge
+const DASH_RECHARGE = 96; // frames until dash can be used again
+const DASH_TIME = 12; // frames the dash speed burst lasts
+const SPEED_DASH = 6000; // hero top speed while dashing, overrides base/sprint speed
+
+// Death
+const RESPAWN_TIME = 96; // frames a dead hero waits in storage before respawning
+
+
+const p_cunit = PVariable(); // hero CUnit, 0 if the player has no hero
+const p_dead = PVariable(); // 1 = hero "died" and is parked in the player's storage location (the unit never really dies)
+const p_respawn_timer = PVariable(); // counts down while dead, respawns at 0 (see spawns.eps)
+const p_pos_x = PVariable(); // hero position as of the last frame
+const p_pos_y = PVariable();
+const p_move_time = PVariable(); // frames spent moving, reset after MOVE_RESET_FRAMES frames standing still
+const p_still_time = PVariable(); // frames since the hero stopped moving
+const p_top_speed = PVariable(); // hero top speed, set with set_p_top_speed
+const p_dodge_timer = PVariable(); // counts down from DODGE_RECHARGE after dodging, 0 = dodge ready
+const p_dash_timer = PVariable(); // counts down from DASH_RECHARGE after dashing, 0 = dash ready
+
+
+// Lifecycle
+
+function UnitExists(playerID) {
+    // the hero unit is still valid (it may be parked in storage while dead). use for unit bookkeeping.
+    if (p_cunit[playerID] == 0) return 0;
+    const unit = CUnit(p_cunit[playerID]);
+    if (unit.unitType == Def.U_HERO[playerID] && unit.playerID == playerID && unit.hp > 0) return 1;
+    return 0;
+}
+
+
+function IsAlive(playerID) {
+    // the hero is in play (exists and not dead/in storage). use for game logic.
+    if (UnitExists(playerID) && !p_dead[playerID]) return 1;
+    return 0;
+}
+
+
+function Remove(playerID) {
+    if (UnitExists(playerID)) {
+        const unit = CUnit(p_cunit[playerID]);
+        unit.remove();
+    }
+    p_cunit[playerID] = 0;
+}
+
+
+function set_p_top_speed(playerID, newValue) {
+    p_top_speed[playerID] = newValue;
+    if (UnitExists(playerID)) {
+        const unit = CUnit(p_cunit[playerID]);
+        unit.topSpeed = newValue;
+    }
+}
+
+
+function Reset(playerID) {
+    // fresh-life hero state for an existing hero (on creation, and on respawn from storage). combat state resets in combat.eps
+    const hero = CUnit(p_cunit[playerID]);
+    p_dead[playerID] = 0;
+    p_pos_x[playerID] = hero.posX; // so the first frame doesn't count as movement
+    p_pos_y[playerID] = hero.posY;
+    p_move_time[playerID] = 0;
+    p_still_time[playerID] = MOVE_RESET_FRAMES;
+    set_p_top_speed(playerID, SPEED_BASE);
+    p_dodge_timer[playerID] = 0;
+    p_dash_timer[playerID] = 0;
+    ModifyUnitEnergy(1, Def.U_HERO[playerID], playerID, Def.L_ANYWHERE, 100); // dodge ready
+}
+
+
+function Create(playerID, location) {
+    // replaces any existing hero. @return 1 on success, 0 if the hero could not be placed
+    Remove(playerID);
+    const unit = Cmn.CreateCUnit(Def.U_HERO[playerID], playerID, location);
+    p_cunit[playerID] = unit;
+    if (unit == 0) return 0;
+    Reset(playerID);
+    return 1;
+}
+
+
+function CreateParked(playerID) {
+    // creates the hero parked in its storage location; it respawns into the zone on the next frame
+    Create(playerID, Def.L_STORAGE[playerID]);
+    p_dead[playerID] = 1;
+    p_respawn_timer[playerID] = 1;
+}
+
+
+function Park(playerID) {
+    // "kills" the hero: the unit never really dies (that would deselect it), it's parked in storage until respawn
+    p_dead[playerID] = 1;
+    p_respawn_timer[playerID] = RESPAWN_TIME;
+    MoveUnit(1, Def.U_HERO[playerID], playerID, Def.L_ANYWHERE, Def.L_STORAGE[playerID]);
+    Order(Def.U_HERO[playerID], playerID, Def.L_STORAGE[playerID], Move, Def.L_STORAGE[playerID]); // cancel any attack/move order
+}
+
+
+function IsDashing(playerID) {
+    // true during the first DASH_TIME frames after dashing
+    if (p_dash_timer[playerID] > DASH_RECHARGE - DASH_TIME) return 1;
+    return 0;
+}
+
+
+function IsDodging(playerID) {
+    // true during the first DODGE_CLOAK_FRAMES frames after dodging
+    if (p_dodge_timer[playerID] > DODGE_RECHARGE - DODGE_CLOAK_FRAMES) return 1;
+    return 0;
+}
+
+
+// Per-frame updates (called from main.eps with playerID as the current player, so DisplayText / PlayWAV go to them).
+// Each reads its player values into locals once and writes them back.
+
+function UpdateMovement(playerID) {
+    // @return 1 if the hero moved since last frame
+    const hero = CUnit(p_cunit[playerID]);
+    const x, y = hero.posX, hero.posY;
+    var is_moving = 0;
+    if (x != p_pos_x[playerID] || y != p_pos_y[playerID]) is_moving = 1;
+    p_pos_x[playerID] = x;
+    p_pos_y[playerID] = y;
+
+    // flingy movement quirk: a unit can get stuck in place with speed left over, clear it
+    if (!is_moving && hero.currentSpeed1 > 0) {
+        hero.currentSpeed1 = 0;
+        hero.currentSpeed2 = 0;
+    }
+
+    // responsiveness: process new orders immediately instead of waiting for the order timers
+    hero.orderTimer = 0;
+    hero.orderQueueTimer = 0;
+
+    // move time counts up while moving, and resets after MOVE_RESET_FRAMES frames standing still
+    var move_time = p_move_time[playerID];
+    var still_time = p_still_time[playerID];
+    if (is_moving) {
+        move_time += 1;
+        still_time = 0;
+    } else if (still_time < MOVE_RESET_FRAMES) {
+        still_time += 1;
+        if (still_time == MOVE_RESET_FRAMES) move_time = 0;
+    }
+    p_move_time[playerID] = move_time;
+    p_still_time[playerID] = still_time;
+    return is_moving;
+}
+
+
+function UpdateDash(playerID) {
+    // dash gives a DASH_TIME frame speed burst (applied in UpdateSpeed), then recharges
+    var dash_timer = p_dash_timer[playerID];
+    if (dash_timer > 0) dash_timer -= 1;
+    if (Controls.p_want_dash[playerID] && dash_timer == 0) {
+        dash_timer = DASH_RECHARGE;
+        // dash effect: kakaru death at the hero's position
+        setloc(Def.L_0X0, p_pos_x[playerID], p_pos_y[playerID]);
+        Cmn.CreateUnitDeathAtLocation(Def.U_KAKARU, playerID, Def.L_0X0);
+    }
+    p_dash_timer[playerID] = dash_timer;
+}
+
+
+function UpdateSpeed(playerID, is_moving) {
+    // sprint after moving for a while (dropped as soon as the hero stops), dash speed while dashing.
+    // recomputed every frame, so bonuses are removed automatically once they no longer apply.
+    var target_speed = SPEED_BASE;
+    if (is_moving && p_move_time[playerID] >= SPRINT_MOVE_FRAMES) target_speed = SPEED_SPRINT;
+    if (IsDashing(playerID)) target_speed = SPEED_DASH;
+    if (p_top_speed[playerID] != target_speed) set_p_top_speed(playerID, target_speed);
+}
+
+
+function UpdateDodge(playerID) {
+    // dodge cloaks the hero for DODGE_CLOAK_FRAMES frames, then recharges
+    const hero = CUnit(p_cunit[playerID]);
+    var dodge_timer = p_dodge_timer[playerID];
+    if (dodge_timer > 0) {
+        dodge_timer -= 1;
+        if (dodge_timer == 0) {
+            DisplayText("\x12\x04DODGE READY!");
+            Def.PlaySoundDodgeReady();
+            ModifyUnitEnergy(1, Def.U_HERO[playerID], playerID, Def.L_ANYWHERE, 100);
+        }
+    }
+    if (Controls.p_want_dodge[playerID] && dodge_timer == 0) {
+        dodge_timer = DODGE_RECHARGE;
+        DisplayText("\x12\x07DODGED!");
+        Def.PlaySoundDodge();
+    }
+    p_dodge_timer[playerID] = dodge_timer;
+
+    const is_dodging = IsDodging(playerID);
+    if (is_dodging) hero.secondaryOrderID = Def.ORDER_CLOAK;
+    else if (hero.isCloaked) hero.secondaryOrderID = Def.ORDER_DECLOAK;
+    // energy shows dodge readiness: empty while recharging (held at 0 against natural regen).
+    // not emptied during the cloak frames, since cloak drains energy and decloaks at 0.
+    if (dodge_timer > 0 && !is_dodging) hero.energy = 0;
+}
